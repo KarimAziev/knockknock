@@ -80,7 +80,7 @@ Dark background with blue text (info style):
 1. Clone or download this repository to your local packages directory:
 ```bash
 cd ~/.emacs.d/localpackages
-git clone https://github.com/mikaelkonradsson/knockknock.git
+git clone https://github.com/konrad1977/knockknock.git
 ```
 
 2. Add to your Emacs configuration:
@@ -93,14 +93,14 @@ git clone https://github.com/mikaelkonradsson/knockknock.git
 
 ```elisp
 (straight-use-package
- '(knockknock :type git :host github :repo "mikaelkonradsson/knockknock"))
+ '(knockknock :type git :host github :repo "konrad1977/knockknock"))
 ```
 
 ### Using use-package with straight
 
 ```elisp
 (use-package knockknock
-  :straight (:host github :repo "mikaelkonradsson/knockknock"))
+  :straight (:host github :repo "konrad1977/knockknock"))
 ```
 
 ## Usage
