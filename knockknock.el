@@ -140,8 +140,13 @@ Set to nil to use Emacs default max-image-size."
   :type 'integer
   :group 'knockknock)
 
-(defcustom knockknock-svg-width 300
-  "Width of SVG canvas in pixels."
+(defcustom knockknock-svg-min-width 300
+  "Minimum width of SVG canvas in pixels."
+  :type 'integer
+  :group 'knockknock)
+
+(defcustom knockknock-svg-max-width 500
+  "Maximum width of SVG canvas in pixels."
   :type 'integer
   :group 'knockknock)
 
@@ -250,12 +255,12 @@ ICON is on left, TITLE and MESSAGE on right with exact positioning."
   (let* ((icon-str (knockknock--get-icon icon))
          (icon-size knockknock-svg-icon-size)
          (padding knockknock-svg-padding)
-         (canvas-width knockknock-svg-width)
          ;; Calculate heights and positions - keep small to avoid max-image-size
          (title-font-size 16)
          (message-font-size 12)
          (line-spacing 4)
          (margin 8)
+         (right-margin 12)  ; Add right margin for text breathing room
          (icon-x margin)
          (icon-y (+ icon-size margin))  ; Baseline for icon
          ;; Text position: if no icon, start at margin, otherwise after icon
@@ -264,8 +269,19 @@ ICON is on left, TITLE and MESSAGE on right with exact positioning."
                    margin))
          (title-y (+ margin icon-size -12))  ; Position title near top
          (message-y (+ title-y title-font-size line-spacing))
+         ;; Calculate needed width based on text content
+         ;; Estimate: ~7 pixels per character for 12px font, ~8 for 16px bold title
+         (title-width (if title (* (length title) 8) 0))
+         (message-width (if message (* (length message) 7) 0))
+         (needed-width (+ text-x (max title-width message-width) right-margin))
+         ;; Constrain canvas width between min and max
+         (canvas-width (max knockknock-svg-min-width
+                           (min knockknock-svg-max-width needed-width)))
+         ;; Calculate available text width and characters per line
+         (available-text-width (- canvas-width text-x right-margin))
+         (chars-per-line (max 20 (/ available-text-width 7)))
          ;; Wrap message text and calculate height
-         (message-lines (when message (knockknock--wrap-text message knockknock-max-message-width)))
+         (message-lines (when message (knockknock--wrap-text message chars-per-line)))
          (num-message-lines (length message-lines))
          (message-block-height (* num-message-lines (+ message-font-size line-spacing)))
          ;; Calculate total height with extra bottom padding

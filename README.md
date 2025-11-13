@@ -21,6 +21,52 @@ knockknock provides beautiful, elegant notifications using posframe and nerd-ico
 - Automatic max-image-size configuration for SVG support
 - Backward compatible with simple text alerts
 
+## Screenshots
+
+### Basic Notifications
+
+Simple alert with icon and message:
+
+![Basic Alert](screenshots/alert.png)
+
+Package installation notification:
+
+![Package Installed](screenshots/package-installed.png)
+
+### Layout Variations
+
+Notification without icon:
+
+![No Icon](screenshots/no-icon.png)
+
+Long message with automatic text wrapping:
+
+![Long Message](screenshots/long-message.png)
+
+Wide notification for longer content:
+
+![Wide Width](screenshots/wide-width.png)
+
+### Position Options
+
+Center-positioned notification:
+
+![Centered](screenshots/centered.png)
+
+Top-right corner notification:
+
+![Top Right](screenshots/top-right.png)
+
+### Custom Text Colors
+
+Dark background with red text (error style):
+
+![Red Text](screenshots/colored-text-red.png)
+
+Dark background with blue text (info style):
+
+![Blue Text](screenshots/colored-text-blue.png)
+
 ## Requirements
 
 - Emacs 26.1 or later
