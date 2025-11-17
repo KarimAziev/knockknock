@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Mikael Konradsson
 
 ;; Author: Mikael Konradsson
-;; Version: 0.2.0
+;; Version: 0.2.2
 ;; Package-Requires: ((emacs "26.1") (posframe "1.0.0") (nerd-icons "0.1.0"))
 ;; Keywords: convenience, notifications, alerts
 ;; URL: https://github.com/mikaelkonradsson/knockknock
@@ -120,19 +120,18 @@ Increase this value if text overlaps with icon, decrease to bring text closer."
   :type 'boolean
   :group 'knockknock)
 
-(defcustom knockknock-use-svg-layout t
-  "Use SVG-based layout for pixel-perfect positioning.
-When non-nil (default), uses SVG for rendering notifications with exact positioning.
-When nil, uses text-based layout with nerd-icons."
+(defcustom knockknock-debug nil
+  "Enable debug logging for knockknock.
+When non-nil, prints debug messages to *Messages* buffer."
   :type 'boolean
   :group 'knockknock)
 
-(defcustom knockknock-max-image-size 10000
-  "Maximum image size for SVG rendering.
-This is set automatically when knockknock loads to allow SVG notifications.
-Set to nil to use Emacs default max-image-size."
-  :type '(choice (const :tag "Use Emacs default" nil)
-                 (integer :tag "Custom size"))
+(defcustom knockknock-use-svg-layout t
+  "Use SVG-based layout for pixel-perfect positioning.
+When non-nil (default), uses SVG for rendering notifications with exact positioning.
+When nil, uses text-based layout with nerd-icons.
+Includes XML escaping and error handling to prevent crashes."
+  :type 'boolean
   :group 'knockknock)
 
 (defcustom knockknock-svg-icon-size 32
@@ -187,6 +186,18 @@ Messages longer than this will be wrapped to multiple lines."
   "Timer for auto-hiding the alert.")
 
 ;;; Functions
+
+(defun knockknock--xml-escape (text)
+  "Escape TEXT for safe inclusion in XML/SVG.
+Returns nil if TEXT is nil."
+  (when text
+    (let ((result text))
+      (setq result (replace-regexp-in-string "&" "&amp;" result))
+      (setq result (replace-regexp-in-string "<" "&lt;" result))
+      (setq result (replace-regexp-in-string ">" "&gt;" result))
+      (setq result (replace-regexp-in-string "\"" "&quot;" result))
+      (setq result (replace-regexp-in-string "'" "&apos;" result))
+      result)))
 
 (defun knockknock--wrap-text (text max-width)
   "Wrap TEXT into lines of maximum MAX-WIDTH characters.
@@ -252,7 +263,11 @@ Returns the icon string or nil if not found."
 ICON is on left, TITLE and MESSAGE on right with exact positioning."
   (require 'svg)
   (require 'dom)
-  (let* ((icon-str (knockknock--get-icon icon))
+  ;; Temporarily disable max-image-size limit for our small notification SVGs
+  (let ((max-image-size nil))
+    (let* ((icon-str (and icon (knockknock--xml-escape (knockknock--get-icon icon))))
+           (title (knockknock--xml-escape title))
+           (message (knockknock--xml-escape message))
          (icon-size knockknock-svg-icon-size)
          (padding knockknock-svg-padding)
          ;; Calculate heights and positions - keep small to avoid max-image-size
@@ -334,51 +349,75 @@ ICON is on left, TITLE and MESSAGE on right with exact positioning."
             (setq current-y (+ current-y message-font-size line-spacing)))))
 
       ;; Insert the SVG as an image
-      (insert-image (svg-image svg)))))
+      (let ((img (svg-image svg)))
+        (when knockknock-debug
+          (message "knockknock: SVG created, size: %dx%d, image: %s"
+                   canvas-width total-height (if img "OK" "FAILED")))
+        (insert-image img))))))
+
+(defun knockknock--format-buffer-text (title message icon)
+  "Format the notification buffer using text-based layout with nerd-icons.
+ICON is on left, TITLE and MESSAGE on right."
+  (let* ((icon-str (knockknock--get-icon icon))
+         (padding (make-string knockknock-icon-padding ?\s)))
+
+    (if icon-str
+        ;; Layout with icon
+        (let* ((text-column knockknock-text-column))
+          ;; Create the icon with increased size
+          (insert (propertize icon-str
+                              'face 'knockknock-icon-face
+                              'display `(height ,knockknock-icon-size)))
+          (insert padding)
+
+          ;; Insert title on same line
+          (when title
+            (insert (propertize title 'face 'knockknock-title-face)))
+
+          ;; Insert message on new line, aligned with title - wrap if needed
+          (when message
+            (let ((message-lines (knockknock--wrap-text message knockknock-max-message-width)))
+              (dolist (line message-lines)
+                (insert "\n")
+                ;; Align to the text column position
+                (insert (propertize " " 'display `(space :align-to ,text-column)))
+                (insert (propertize line 'face 'knockknock-message-face))))))
+
+      ;; Layout without icon - just text
+      (when title
+        (insert (propertize title 'face 'knockknock-title-face)))
+      (when message
+        (let ((message-lines (knockknock--wrap-text message knockknock-max-message-width)))
+          (dolist (line message-lines)
+            (insert "\n")
+            (insert (propertize line 'face 'knockknock-message-face))))))))
 
 (defun knockknock--format-buffer (title message icon)
   "Format the notification buffer with ICON on left, TITLE and MESSAGE on right.
 Uses SVG layout if `knockknock-use-svg-layout' is non-nil, otherwise text layout."
   (erase-buffer)
 
+  (when knockknock-debug
+    (message "knockknock: Formatting with svg=%s title=%s message=%s icon=%s"
+             knockknock-use-svg-layout title message icon))
   (if knockknock-use-svg-layout
-      ;; SVG-based layout for pixel-perfect positioning
-      (knockknock--format-buffer-svg title message icon)
-
-    ;; Text-based layout with nerd-icons
-    (let* ((icon-str (knockknock--get-icon icon))
-           (padding (make-string knockknock-icon-padding ?\s)))
-
-      (if icon-str
-          ;; Layout with icon
-          (let* ((text-column knockknock-text-column))
-            ;; Create the icon with increased size
-            (insert (propertize icon-str
-                                'face 'knockknock-icon-face
-                                'display `(height ,knockknock-icon-size)))
-            (insert padding)
-
-            ;; Insert title on same line
-            (when title
-              (insert (propertize title 'face 'knockknock-title-face)))
-
-            ;; Insert message on new line, aligned with title - wrap if needed
-            (when message
-              (let ((message-lines (knockknock--wrap-text message knockknock-max-message-width)))
-                (dolist (line message-lines)
-                  (insert "\n")
-                  ;; Align to the text column position
-                  (insert (propertize " " 'display `(space :align-to ,text-column)))
-                  (insert (propertize line 'face 'knockknock-message-face))))))
-
-        ;; Layout without icon - just text
-        (when title
-          (insert (propertize title 'face 'knockknock-title-face)))
-        (when message
-          (let ((message-lines (knockknock--wrap-text message knockknock-max-message-width)))
-            (dolist (line message-lines)
-              (insert "\n")
-              (insert (propertize line 'face 'knockknock-message-face)))))))))
+      ;; SVG-based layout for pixel-perfect positioning with error handling
+      (condition-case err
+          (progn
+            (when knockknock-debug
+              (message "knockknock: Attempting SVG rendering..."))
+            (knockknock--format-buffer-svg title message icon)
+            (when knockknock-debug
+              (message "knockknock: SVG rendering complete")))
+        (error
+         ;; Fall back to text layout if SVG fails
+         (message "knockknock: SVG rendering failed (%s), falling back to text layout" err)
+         (erase-buffer)
+         (knockknock--format-buffer-text title message icon)))
+    ;; Text-based layout
+    (when knockknock-debug
+      (message "knockknock: Using text layout"))
+    (knockknock--format-buffer-text title message icon)))
 
 ;;;###autoload
 (defun knockknock-notify (&rest args)
@@ -411,20 +450,26 @@ Examples:
     (with-current-buffer (get-buffer-create knockknock--buffer)
       (knockknock--format-buffer title message icon))
 
-    ;; Display posframe with optional color parameters
-    (apply #'posframe-show
-           knockknock--buffer
-           :poshandler knockknock-poshandler
-           :internal-border-width knockknock-border-width
-           :internal-border-color knockknock-border-color
-           :left-fringe knockknock-left-fringe
-           :right-fringe knockknock-right-fringe
-           ;; Only pass color parameters if they are non-nil
-           (append
-            (when knockknock-background-color
-              (list :background-color knockknock-background-color))
-            (when knockknock-foreground-color
-              (list :foreground-color knockknock-foreground-color))))
+    ;; Save and temporarily increase max-image-size for SVG rendering
+    (let ((old-max-image-size max-image-size))
+      (setq max-image-size nil)  ; Disable limit for our small notification SVGs
+      (unwind-protect
+          ;; Display posframe with optional color parameters
+          (apply #'posframe-show
+                 knockknock--buffer
+                 :poshandler knockknock-poshandler
+                 :internal-border-width knockknock-border-width
+                 :internal-border-color knockknock-border-color
+                 :left-fringe knockknock-left-fringe
+                 :right-fringe knockknock-right-fringe
+                 ;; Only pass color parameters if they are non-nil
+                 (append
+                  (when knockknock-background-color
+                    (list :background-color knockknock-background-color))
+                  (when knockknock-foreground-color
+                    (list :foreground-color knockknock-foreground-color))))
+        ;; Always restore the original max-image-size value
+        (setq max-image-size old-max-image-size)))
 
     ;; Hide after specified duration
     (setq knockknock--timer
@@ -476,10 +521,6 @@ If DURATION is nil, use `knockknock-default-duration'."
   (posframe-delete knockknock--buffer))
 
 ;;; Setup
-
-;; Set max-image-size for SVG rendering
-(when knockknock-max-image-size
-  (setq max-image-size knockknock-max-image-size))
 
 (provide 'knockknock)
 

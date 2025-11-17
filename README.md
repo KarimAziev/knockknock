@@ -1,6 +1,12 @@
 # knockknock
 
-**Unobtrusive notifications with icons and SVG support**
+<p align="center">
+  <img src="logo/logo.png" alt="knockknock logo" width="200"/>
+</p>
+
+<p align="center">
+  <b>Unobtrusive notifications with icons and SVG support</b>
+</p>
 
 knockknock provides beautiful, elegant notifications using posframe and nerd-icons. Display temporary alert messages with custom icons, titles, and messages in a centered, customizable frame that automatically disappears. Features pixel-perfect SVG layout with automatic text wrapping for long messages.
 
@@ -18,7 +24,10 @@ knockknock provides beautiful, elegant notifications using posframe and nerd-ico
 - Auto-dismiss after configurable duration
 - Manual dismiss support
 - Multiple position handlers available
-- Automatic max-image-size configuration for SVG support
+- **Robust error handling**: Automatic fallback from SVG to text layout on failure
+- **XML escaping**: Secure SVG rendering prevents crashes from special characters
+- **Smart image sizing**: Temporary max-image-size handling during rendering
+- **Debug mode**: Optional debug logging for troubleshooting
 - Backward compatible with simple text alerts
 
 ## Screenshots
@@ -191,6 +200,9 @@ All aspects of knockknock can be customized through `M-x customize-group RET kno
 (setq knockknock-use-icons t)                ; Enable/disable icons
 (setq knockknock-default-icon "fa-bell")     ; Default icon
 
+;; Debug mode
+(setq knockknock-debug nil)                  ; Enable debug logging (default: nil)
+
 ;; Text wrapping
 (setq knockknock-max-message-width 40)       ; Max characters per line
 
@@ -216,10 +228,12 @@ For SVG-based layout (default):
 ```elisp
 (setq knockknock-use-svg-layout t)           ; SVG layout (default)
 (setq knockknock-svg-icon-size 32)           ; Icon size in pixels
-(setq knockknock-svg-width 300)              ; Canvas width in pixels
+(setq knockknock-svg-min-width 300)          ; Minimum canvas width in pixels
+(setq knockknock-svg-max-width 500)          ; Maximum canvas width in pixels
 (setq knockknock-svg-padding 12)             ; Padding between icon and text
-(setq knockknock-max-image-size 10000)       ; Max image size (set automatically)
 ```
+
+**Note**: Image size limits are handled automatically during rendering. The package temporarily adjusts `max-image-size` when displaying notifications to ensure SVGs render correctly without affecting other parts of Emacs.
 
 ### Customizing Faces
 
@@ -252,17 +266,22 @@ You can customize the appearance of titles, messages, and icons:
 | Icon scaling | Exact pixels | Text properties |
 | Implementation | Sophisticated | Simple |
 | Performance | Slightly slower | Fast |
+| Error handling | Automatic fallback | N/A |
+| XML safety | Built-in escaping | N/A |
+| Crash prevention | Yes | N/A |
 
 **When to use SVG layout (default):**
 - You want pixel-perfect control over positioning
 - You're building a UI similar to agent-shell
 - You need exact icon and text placement
 - You want consistent rendering across different themes
+- You benefit from automatic error handling and safety features
 
 **When to use text layout:**
 - You want simpler, faster rendering
 - Text-based layout is sufficient
 - You prefer Emacs-native text properties
+- Maximum performance is critical
 
 ### Available Position Handlers
 
@@ -402,6 +421,29 @@ Show notifications without icons:
 (knockknock-notify :title "No Icon" :message "Just text")
 ```
 
+## Reliability & Safety
+
+knockknock v0.2.2 includes several improvements for stability and crash prevention:
+
+### Automatic Error Handling
+
+If SVG rendering fails for any reason, the package automatically falls back to text-based layout without user intervention. You'll see a message in `*Messages*` if this happens, but your notification will still display.
+
+### XML Escaping
+
+All text (titles, messages, and icons) is automatically XML-escaped before being inserted into SVG. This prevents crashes from special characters like `<`, `>`, `&`, quotes, etc.
+
+### Smart Image Sizing
+
+The package temporarily adjusts `max-image-size` only during notification display, then immediately restores it. This ensures:
+- SVG notifications render correctly
+- Other parts of Emacs are not affected
+- No global state pollution
+
+### Memory Safety
+
+Image size calculations are kept minimal (default max 500x100 pixels) to avoid memory issues, while still providing beautiful notifications.
+
 ## Troubleshooting
 
 ### Icons not showing in SVG layout
@@ -412,12 +454,39 @@ Make sure you have nerd-icons installed and the font is available system-wide:
 M-x nerd-icons-install-fonts
 ```
 
-### SVG image size errors
+The font family used is "Symbols Nerd Font Mono". Verify it's installed correctly on your system.
 
-The package automatically sets `max-image-size` to 10000. If you still have issues:
+### SVG not rendering or showing blank notifications
 
+The package handles image size limits automatically. If you still have issues:
+
+1. **Enable debug mode** to see what's happening:
+   ```elisp
+   (setq knockknock-debug t)
+   ```
+   Check the `*Messages*` buffer for debug output.
+
+2. **Try switching to text layout** temporarily:
+   ```elisp
+   (setq knockknock-use-svg-layout nil)
+   ```
+
+3. **Check for SVG support** in your Emacs build:
+   ```elisp
+   (image-type-available-p 'svg)  ; Should return t
+   ```
+
+### Emacs crashes or memory issues
+
+If you experience crashes:
+
+1. The package now includes **automatic error handling** that falls back to text layout if SVG fails
+2. **XML escaping** prevents crashes from special characters in notifications
+3. Image size limits are handled **automatically and temporarily** - they don't affect other parts of Emacs
+
+If crashes persist, disable SVG layout:
 ```elisp
-(setq knockknock-max-image-size 15000)  ; Increase limit
+(setq knockknock-use-svg-layout nil)
 ```
 
 ### Theme colors not working
@@ -428,6 +497,49 @@ Set background and foreground to nil to use theme defaults:
 (setq knockknock-background-color nil)
 (setq knockknock-foreground-color nil)
 ```
+
+### Debug Mode
+
+Enable detailed logging to troubleshoot issues:
+
+```elisp
+(setq knockknock-debug t)
+```
+
+Debug messages appear in the `*Messages*` buffer and include:
+- Layout mode selection (SVG vs text)
+- SVG rendering progress
+- Image creation status
+- Error messages with automatic fallback notifications
+
+## Changelog
+
+### v0.2.2 (2025)
+
+**Bug Fixes & Improvements:**
+- Fixed crash issues related to SVG rendering and librsvg
+- Added XML escaping for safe SVG text rendering
+- Implemented automatic error handling with fallback to text layout
+- Smart `max-image-size` handling (temporary adjustment during rendering)
+- Added `knockknock-debug` customization variable for optional debug logging
+- Improved stability and crash prevention
+
+**Breaking Changes:**
+- Removed `knockknock-max-image-size` customization (now handled automatically)
+
+### v0.2.1
+
+- Initial stable release with SVG support
+- Two layout modes (SVG and text-based)
+- Automatic text wrapping
+- Customizable appearance
+
+### v0.2.0
+
+- Added modern API with `knockknock-notify`
+- SVG-based pixel-perfect layout
+- Icon support via nerd-icons
+- Title and message display
 
 ## License
 
@@ -440,3 +552,11 @@ Contributions are welcome! Please feel free to submit issues or pull requests.
 ## Author
 
 Mikael Konradsson
+
+## Support
+
+This package is developed and maintained in my free time. If you find it useful and want to support continued development, consider sponsoring:
+
+💝 [Sponsor on GitHub](https://github.com/sponsors/konrad1977)
+
+Every contribution, no matter how small, is greatly appreciated and helps keep this project alive!
