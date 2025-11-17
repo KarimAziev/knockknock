@@ -1,7 +1,7 @@
 # knockknock
 
 <p align="center">
-  <img src="logo/logo.png" alt="knockknock logo" width="200"/>
+  <img src="logo/logo.png" alt="knockknock logo" width="600"/>
 </p>
 
 <p align="center">
