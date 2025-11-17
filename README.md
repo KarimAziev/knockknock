@@ -10,6 +10,14 @@
 
 knockknock provides beautiful, elegant notifications using posframe and nerd-icons. Display temporary alert messages with custom icons, titles, and messages in a centered, customizable frame that automatically disappears. Features pixel-perfect SVG layout with automatic text wrapping for long messages.
 
+## Support
+
+This package is developed and maintained in my free time. If you find it useful and want to support continued development, consider sponsoring:
+
+💝 [Sponsor on GitHub](https://github.com/sponsors/konrad1977)
+
+Every contribution, no matter how small, is greatly appreciated and helps keep this project alive!
+
 ## Features
 
 - Beautiful icon-based notifications with nerd-icons
@@ -552,11 +560,3 @@ Contributions are welcome! Please feel free to submit issues or pull requests.
 ## Author
 
 Mikael Konradsson
-
-## Support
-
-This package is developed and maintained in my free time. If you find it useful and want to support continued development, consider sponsoring:
-
-💝 [Sponsor on GitHub](https://github.com/sponsors/konrad1977)
-
-Every contribution, no matter how small, is greatly appreciated and helps keep this project alive!
