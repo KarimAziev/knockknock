@@ -199,6 +199,10 @@ All aspects of knockknock can be customized through `M-x customize-group RET kno
 (setq knockknock-foreground-color nil)  ; Use theme foreground
 (setq knockknock-border-color "orange")
 
+;; Background color adjustments (applied to theme background)
+(setq knockknock-darken-background-percent 0)   ; Darken background by percentage (0-100)
+(setq knockknock-lighten-background-percent 0)  ; Lighten background by percentage (0-100)
+
 ;; Border and spacing
 (setq knockknock-border-width 2)
 (setq knockknock-left-fringe 10)
@@ -393,6 +397,24 @@ You can customize the appearance of titles, messages, and icons:
 (my-notify-error "Something went wrong!")
 (my-notify-info "Please review the changes")
 ```
+
+### Adjusting notification background brightness
+
+Make notifications slightly darker or lighter than your theme:
+
+```elisp
+;; Make notifications 5% darker than theme background
+(setq knockknock-darken-background-percent 5)
+
+;; Or make them 10% lighter
+(setq knockknock-lighten-background-percent 10)
+
+;; Reset to use exact theme color
+(setq knockknock-darken-background-percent 0)
+(setq knockknock-lighten-background-percent 0)
+```
+
+This is useful for making notifications visually distinct from regular buffers while still maintaining theme consistency. Note: If both are set, darken takes precedence.
 
 ## Advanced Features
 

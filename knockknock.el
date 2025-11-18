@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Mikael Konradsson
 
 ;; Author: Mikael Konradsson
-;; Version: 0.2.2
+;; Version: 0.2.5
 ;; Package-Requires: ((emacs "26.1") (posframe "1.0.0") (nerd-icons "0.1.0"))
 ;; Keywords: convenience, notifications, alerts
 ;; URL: https://github.com/mikaelkonradsson/knockknock
@@ -40,6 +40,7 @@
 
 (require 'posframe)
 (require 'nerd-icons)
+(require 'svg)
 
 ;;; Customization
 
@@ -78,12 +79,27 @@ If nil, uses the default foreground color from your theme."
                  (string :tag "Custom color"))
   :group 'knockknock)
 
-(defcustom knockknock-left-fringe 8
+(defcustom knockknock-darken-background-percent 0
+  "Percentage to darken the background color (0-100).
+If 0, uses the theme's background color unchanged.
+Positive values darken the background (e.g., 5 makes it 5% darker)."
+  :type 'integer
+  :group 'knockknock)
+
+(defcustom knockknock-lighten-background-percent 0
+  "Percentage to lighten the background color (0-100).
+If 0, uses the theme's background color unchanged.
+Positive values lighten the background (e.g., 5 makes it 5% lighter).
+Note: If both darken and lighten are set, darken takes precedence."
+  :type 'integer
+  :group 'knockknock)
+
+(defcustom knockknock-left-fringe 0
   "Left fringe width of the alert frame."
   :type 'integer
   :group 'knockknock)
 
-(defcustom knockknock-right-fringe 8
+(defcustom knockknock-right-fringe 0
   "Right fringe width of the alert frame."
   :type 'integer
   :group 'knockknock)
@@ -185,7 +201,57 @@ Messages longer than this will be wrapped to multiple lines."
 (defvar knockknock--timer nil
   "Timer for auto-hiding the alert.")
 
+(defvar knockknock--svg-cache (make-hash-table :test 'equal)
+  "Cache for generated SVG images.
+Keys are lists of (title message icon), values are the SVG image objects.")
+
+(defvar knockknock--max-cache-size 50
+  "Maximum number of SVG images to keep in cache.")
+
 ;;; Functions
+
+(defun knockknock--color-to-rgb (color)
+  "Convert COLOR (hex or name) to RGB components (0-255)."
+  (let ((rgb (color-values color)))
+    (if rgb
+        (mapcar (lambda (x) (/ x 256)) rgb)
+      (error "Invalid color: %s" color))))
+
+(defun knockknock--rgb-to-hex (r g b)
+  "Convert R G B components to hex color string."
+  (format "#%02x%02x%02x" r g b))
+
+(defun knockknock--darken-color (color percent)
+  "Darken COLOR by PERCENT (0-100)."
+  (let* ((rgb (knockknock--color-to-rgb color))
+         (darkened (mapcar (lambda (component)
+                             (max 0
+                                  (min 255
+                                       (floor (* component (- 100 percent) 0.01)))))
+                           rgb)))
+    (apply #'knockknock--rgb-to-hex darkened)))
+
+(defun knockknock--lighten-color (color percent)
+  "Lighten COLOR by PERCENT (0-100)."
+  (let* ((rgb (knockknock--color-to-rgb color))
+         (lightened (mapcar (lambda (component)
+                              (max 0
+                                   (min 255
+                                        (floor (+ component
+                                                  (* (- 255 component)
+                                                     (/ percent 100.0)))))))
+                            rgb)))
+    (apply #'knockknock--rgb-to-hex lightened)))
+
+(defun knockknock--adjust-background-color (color)
+  "Adjust COLOR based on darken/lighten settings.
+Returns the adjusted color or COLOR if no adjustment is needed."
+  (cond
+   ((> knockknock-darken-background-percent 0)
+    (knockknock--darken-color color knockknock-darken-background-percent))
+   ((> knockknock-lighten-background-percent 0)
+    (knockknock--lighten-color color knockknock-lighten-background-percent))
+   (t color)))
 
 (defun knockknock--xml-escape (text)
   "Escape TEXT for safe inclusion in XML/SVG.
@@ -258,13 +324,29 @@ Returns the icon string or nil if not found."
             (_ (nerd-icons-codicon (concat "nf-cod-" icon-name))))
         (error nil)))))
 
+(defun knockknock--cache-key (title message icon)
+  "Generate cache key from TITLE, MESSAGE, and ICON."
+  (list (or title "") (or message "") (or icon "")))
+
+(defun knockknock--get-cached-svg (title message icon)
+  "Get cached SVG image for TITLE, MESSAGE, and ICON, or nil if not cached."
+  (gethash (knockknock--cache-key title message icon) knockknock--svg-cache))
+
+(defun knockknock--cache-svg (title message icon image)
+  "Cache SVG IMAGE for TITLE, MESSAGE, and ICON.
+If cache is full, clear oldest entries."
+  (when (>= (hash-table-count knockknock--svg-cache) knockknock--max-cache-size)
+    ;; Clear half the cache when full (simple LRU approximation)
+    (clrhash knockknock--svg-cache))
+  (puthash (knockknock--cache-key title message icon) image knockknock--svg-cache))
+
 (defun knockknock--format-buffer-svg (title message icon)
   "Format the notification buffer using SVG for pixel-perfect layout.
 ICON is on left, TITLE and MESSAGE on right with exact positioning."
   (require 'svg)
   (require 'dom)
-  ;; Temporarily disable max-image-size limit for our small notification SVGs
-  (let ((max-image-size nil))
+  ;; Set reasonable max-image-size for notifications
+  (let ((max-image-size 8000))
     (let* ((icon-str (and icon (knockknock--xml-escape (knockknock--get-icon icon))))
            (title (knockknock--xml-escape title))
            (message (knockknock--xml-escape message))
@@ -348,11 +430,13 @@ ICON is on left, TITLE and MESSAGE on right with exact positioning."
             ;; Move to next line
             (setq current-y (+ current-y message-font-size line-spacing)))))
 
-      ;; Insert the SVG as an image
+      ;; Convert to image and cache it
       (let ((img (svg-image svg)))
         (when knockknock-debug
           (message "knockknock: SVG created, size: %dx%d, image: %s"
                    canvas-width total-height (if img "OK" "FAILED")))
+        ;; Cache the generated image
+        (knockknock--cache-svg title message icon img)
         (insert-image img))))))
 
 (defun knockknock--format-buffer-text (title message icon)
@@ -404,11 +488,19 @@ Uses SVG layout if `knockknock-use-svg-layout' is non-nil, otherwise text layout
       ;; SVG-based layout for pixel-perfect positioning with error handling
       (condition-case err
           (progn
-            (when knockknock-debug
-              (message "knockknock: Attempting SVG rendering..."))
-            (knockknock--format-buffer-svg title message icon)
-            (when knockknock-debug
-              (message "knockknock: SVG rendering complete")))
+            ;; Check cache first
+            (let ((cached-img (knockknock--get-cached-svg title message icon)))
+              (if cached-img
+                  (progn
+                    (when knockknock-debug
+                      (message "knockknock: Using cached SVG"))
+                    (insert-image cached-img))
+                ;; Not in cache, generate new SVG
+                (when knockknock-debug
+                  (message "knockknock: Generating new SVG..."))
+                (knockknock--format-buffer-svg title message icon)
+                (when knockknock-debug
+                  (message "knockknock: SVG rendering complete")))))
         (error
          ;; Fall back to text layout if SVG fails
          (message "knockknock: SVG rendering failed (%s), falling back to text layout" err)
@@ -451,23 +543,26 @@ Examples:
       (knockknock--format-buffer title message icon))
 
     ;; Save and temporarily increase max-image-size for SVG rendering
-    (let ((old-max-image-size max-image-size))
-      (setq max-image-size nil)  ; Disable limit for our small notification SVGs
+    (let* ((old-max-image-size max-image-size)
+           ;; Get colors at display time to ensure theme colors are used
+           (base-bg-color (or knockknock-background-color
+                             (face-background 'default nil t)))
+           ;; Apply darken/lighten adjustments
+           (bg-color (knockknock--adjust-background-color base-bg-color))
+           (fg-color (or knockknock-foreground-color
+                        (face-foreground 'default nil t))))
+      (setq max-image-size 8000)  ; Set reasonable limit for notification SVGs
       (unwind-protect
-          ;; Display posframe with optional color parameters
-          (apply #'posframe-show
-                 knockknock--buffer
-                 :poshandler knockknock-poshandler
-                 :internal-border-width knockknock-border-width
-                 :internal-border-color knockknock-border-color
-                 :left-fringe knockknock-left-fringe
-                 :right-fringe knockknock-right-fringe
-                 ;; Only pass color parameters if they are non-nil
-                 (append
-                  (when knockknock-background-color
-                    (list :background-color knockknock-background-color))
-                  (when knockknock-foreground-color
-                    (list :foreground-color knockknock-foreground-color))))
+          ;; Display posframe with color parameters from current theme
+          (posframe-show
+           knockknock--buffer
+           :poshandler knockknock-poshandler
+           :internal-border-width knockknock-border-width
+           :internal-border-color knockknock-border-color
+           :left-fringe knockknock-left-fringe
+           :right-fringe knockknock-right-fringe
+           :background-color bg-color
+           :foreground-color fg-color)
         ;; Always restore the original max-image-size value
         (setq max-image-size old-max-image-size)))
 
@@ -491,20 +586,23 @@ If DURATION is nil, use `knockknock-default-duration'."
       (erase-buffer)
       (insert message))
 
-    ;; Display posframe with optional color parameters
-    (apply #'posframe-show
-           knockknock--buffer
-           :poshandler knockknock-poshandler
-           :internal-border-width knockknock-border-width
-           :internal-border-color knockknock-border-color
-           :left-fringe knockknock-left-fringe
-           :right-fringe knockknock-right-fringe
-           ;; Only pass color parameters if they are non-nil
-           (append
-            (when knockknock-background-color
-              (list :background-color knockknock-background-color))
-            (when knockknock-foreground-color
-              (list :foreground-color knockknock-foreground-color))))
+    ;; Get colors at display time to ensure theme colors are used
+    (let* ((base-bg-color (or knockknock-background-color
+                             (face-background 'default nil t)))
+           ;; Apply darken/lighten adjustments
+           (bg-color (knockknock--adjust-background-color base-bg-color))
+           (fg-color (or knockknock-foreground-color
+                        (face-foreground 'default nil t))))
+      ;; Display posframe with color parameters from current theme
+      (posframe-show
+       knockknock--buffer
+       :poshandler knockknock-poshandler
+       :internal-border-width knockknock-border-width
+       :internal-border-color knockknock-border-color
+       :left-fringe knockknock-left-fringe
+       :right-fringe knockknock-right-fringe
+       :background-color bg-color
+       :foreground-color fg-color))
 
     ;; Hide after specified duration
     (setq knockknock--timer
