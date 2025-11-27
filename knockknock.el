@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Mikael Konradsson
 
 ;; Author: Mikael Konradsson
-;; Version: 0.2.5
+;; Version: 0.2.6
 ;; Package-Requires: ((emacs "26.1") (posframe "1.0.0") (nerd-icons "0.1.0"))
 ;; Keywords: convenience, notifications, alerts
 ;; URL: https://github.com/mikaelkonradsson/knockknock
@@ -94,12 +94,12 @@ Note: If both darken and lighten are set, darken takes precedence."
   :type 'integer
   :group 'knockknock)
 
-(defcustom knockknock-left-fringe 0
+(defcustom knockknock-left-fringe 10
   "Left fringe width of the alert frame."
   :type 'integer
   :group 'knockknock)
 
-(defcustom knockknock-right-fringe 0
+(defcustom knockknock-right-fringe 10
   "Right fringe width of the alert frame."
   :type 'integer
   :group 'knockknock)
@@ -167,6 +167,16 @@ Includes XML escaping and error handling to prevent crashes."
 
 (defcustom knockknock-svg-padding 12
   "Padding between icon and text in pixels for SVG layout."
+  :type 'integer
+  :group 'knockknock)
+
+(defcustom knockknock-left-padding 12
+  "Left padding in pixels from the leading edge to the icon."
+  :type 'integer
+  :group 'knockknock)
+
+(defcustom knockknock-right-padding 16
+  "Right padding in pixels from the text to the trailing edge."
   :type 'integer
   :group 'knockknock)
 
@@ -324,30 +334,51 @@ Returns the icon string or nil if not found."
             (_ (nerd-icons-codicon (concat "nf-cod-" icon-name))))
         (error nil)))))
 
-(defun knockknock--cache-key (title message icon)
-  "Generate cache key from TITLE, MESSAGE, and ICON."
-  (list (or title "") (or message "") (or icon "")))
+(defun knockknock--load-svg-file (file-path)
+  "Load SVG content from FILE-PATH.
+Returns the SVG data as a string, or nil if the file cannot be read.
+FILE-PATH is expanded to handle ~ and other path shortcuts."
+  (when file-path
+    (let ((expanded-path (expand-file-name file-path)))
+      (condition-case err
+          (when (file-readable-p expanded-path)
+            (with-temp-buffer
+              (insert-file-contents expanded-path)
+              (buffer-string)))
+        (error
+         (when knockknock-debug
+           (message "knockknock: Failed to load SVG file %s: %s" expanded-path err))
+         nil)))))
 
-(defun knockknock--get-cached-svg (title message icon)
-  "Get cached SVG image for TITLE, MESSAGE, and ICON, or nil if not cached."
-  (gethash (knockknock--cache-key title message icon) knockknock--svg-cache))
+(defun knockknock--cache-key (title message icon &optional icon-file)
+  "Generate cache key from TITLE, MESSAGE, ICON, and optional ICON-FILE."
+  (list (or title "") (or message "") (or icon "") (or icon-file "")))
 
-(defun knockknock--cache-svg (title message icon image)
-  "Cache SVG IMAGE for TITLE, MESSAGE, and ICON.
+(defun knockknock--get-cached-svg (title message icon &optional icon-file)
+  "Get cached SVG image for TITLE, MESSAGE, ICON, and ICON-FILE, or nil if not cached."
+  (gethash (knockknock--cache-key title message icon icon-file) knockknock--svg-cache))
+
+(defun knockknock--cache-svg (title message icon image &optional icon-file)
+  "Cache SVG IMAGE for TITLE, MESSAGE, ICON, and optional ICON-FILE.
 If cache is full, clear oldest entries."
   (when (>= (hash-table-count knockknock--svg-cache) knockknock--max-cache-size)
     ;; Clear half the cache when full (simple LRU approximation)
     (clrhash knockknock--svg-cache))
-  (puthash (knockknock--cache-key title message icon) image knockknock--svg-cache))
+  (puthash (knockknock--cache-key title message icon icon-file) image knockknock--svg-cache))
 
-(defun knockknock--format-buffer-svg (title message icon)
+(defun knockknock--format-buffer-svg (title message icon &optional icon-file)
   "Format the notification buffer using SVG for pixel-perfect layout.
-ICON is on left, TITLE and MESSAGE on right with exact positioning."
+ICON is on left, TITLE and MESSAGE on right with exact positioning.
+If ICON-FILE is provided, embed the custom SVG file instead of using nerd-icons."
   (require 'svg)
   (require 'dom)
   ;; Set reasonable max-image-size for notifications
   (let ((max-image-size 8000))
-    (let* ((icon-str (and icon (knockknock--xml-escape (knockknock--get-icon icon))))
+    (let* ((custom-svg-data (knockknock--load-svg-file icon-file))
+           (icon-str (and (not custom-svg-data)
+                          icon
+                          (knockknock--xml-escape (knockknock--get-icon icon))))
+           (has-icon (or custom-svg-data icon-str))
            (title (knockknock--xml-escape title))
            (message (knockknock--xml-escape message))
          (icon-size knockknock-svg-icon-size)
@@ -356,12 +387,12 @@ ICON is on left, TITLE and MESSAGE on right with exact positioning."
          (title-font-size 16)
          (message-font-size 12)
          (line-spacing 4)
-         (margin 8)
-         (right-margin 12)  ; Add right margin for text breathing room
+         (margin knockknock-left-padding)
+         (right-margin knockknock-right-padding)
          (icon-x margin)
          (icon-y (+ icon-size margin))  ; Baseline for icon
          ;; Text position: if no icon, start at margin, otherwise after icon
-         (text-x (if icon-str
+         (text-x (if has-icon
                      (+ icon-size padding margin)
                    margin))
          (title-y (+ margin icon-size -12))  ; Position title near top
@@ -393,8 +424,21 @@ ICON is on left, TITLE and MESSAGE on right with exact positioning."
     ;; Create SVG
     (let ((svg (svg-create canvas-width total-height)))
 
-      ;; Add icon - use nerd-icons compatible font
-      (when icon-str
+      ;; Add icon - either custom SVG file or nerd-icons font
+      (cond
+       ;; Custom SVG file
+       (custom-svg-data
+        (let ((data-uri (concat "data:image/svg+xml;base64,"
+                                (base64-encode-string custom-svg-data t))))
+          (svg--append svg
+                       (dom-node 'image
+                                 `((x . ,icon-x)
+                                   (y . ,margin)
+                                   (width . ,icon-size)
+                                   (height . ,icon-size)
+                                   (xlink:href . ,data-uri))))))
+       ;; Nerd-icons font icon
+       (icon-str
         (let* ((nerd-font "Symbols Nerd Font Mono")
                (text-node (dom-node 'text
                                    `((x . ,icon-x)
@@ -403,7 +447,7 @@ ICON is on left, TITLE and MESSAGE on right with exact positioning."
                                      (font-family . ,nerd-font)
                                      (fill . ,icon-color)))))
           (dom-append-child text-node icon-str)
-          (svg--append svg text-node)))
+          (svg--append svg text-node))))
 
       ;; Add title using DOM nodes
       (when title
@@ -436,12 +480,13 @@ ICON is on left, TITLE and MESSAGE on right with exact positioning."
           (message "knockknock: SVG created, size: %dx%d, image: %s"
                    canvas-width total-height (if img "OK" "FAILED")))
         ;; Cache the generated image
-        (knockknock--cache-svg title message icon img)
+        (knockknock--cache-svg title message icon img icon-file)
         (insert-image img))))))
 
-(defun knockknock--format-buffer-text (title message icon)
+(defun knockknock--format-buffer-text (title message icon &optional _icon-file)
   "Format the notification buffer using text-based layout with nerd-icons.
-ICON is on left, TITLE and MESSAGE on right."
+ICON is on left, TITLE and MESSAGE on right.
+ICON-FILE is ignored in text mode (SVG embedding not possible)."
   (let* ((icon-str (knockknock--get-icon icon))
          (padding (make-string knockknock-icon-padding ?\s)))
 
@@ -476,20 +521,21 @@ ICON is on left, TITLE and MESSAGE on right."
             (insert "\n")
             (insert (propertize line 'face 'knockknock-message-face))))))))
 
-(defun knockknock--format-buffer (title message icon)
+(defun knockknock--format-buffer (title message icon &optional icon-file)
   "Format the notification buffer with ICON on left, TITLE and MESSAGE on right.
-Uses SVG layout if `knockknock-use-svg-layout' is non-nil, otherwise text layout."
+Uses SVG layout if `knockknock-use-svg-layout' is non-nil, otherwise text layout.
+If ICON-FILE is provided, use the custom SVG file (only works in SVG layout mode)."
   (erase-buffer)
 
   (when knockknock-debug
-    (message "knockknock: Formatting with svg=%s title=%s message=%s icon=%s"
-             knockknock-use-svg-layout title message icon))
+    (message "knockknock: Formatting with svg=%s title=%s message=%s icon=%s icon-file=%s"
+             knockknock-use-svg-layout title message icon icon-file))
   (if knockknock-use-svg-layout
       ;; SVG-based layout for pixel-perfect positioning with error handling
       (condition-case err
           (progn
             ;; Check cache first
-            (let ((cached-img (knockknock--get-cached-svg title message icon)))
+            (let ((cached-img (knockknock--get-cached-svg title message icon icon-file)))
               (if cached-img
                   (progn
                     (when knockknock-debug
@@ -498,7 +544,7 @@ Uses SVG layout if `knockknock-use-svg-layout' is non-nil, otherwise text layout
                 ;; Not in cache, generate new SVG
                 (when knockknock-debug
                   (message "knockknock: Generating new SVG..."))
-                (knockknock--format-buffer-svg title message icon)
+                (knockknock--format-buffer-svg title message icon icon-file)
                 (when knockknock-debug
                   (message "knockknock: SVG rendering complete")))))
         (error
@@ -516,21 +562,28 @@ Uses SVG layout if `knockknock-use-svg-layout' is non-nil, otherwise text layout
   "Display a notification with optional ICON, TITLE, and MESSAGE.
 
 ARGS is a property list with the following keys:
-  :title    - Title text (optional)
-  :message  - Message text (optional)
-  :icon     - Nerd-icon name (optional, defaults to `knockknock-default-icon')
-  :duration - Duration in seconds (optional, defaults to `knockknock-default-duration')
+  :title     - Title text (optional)
+  :message   - Message text (optional)
+  :icon      - Nerd-icon name (optional, defaults to `knockknock-default-icon')
+  :icon-file - Path to a custom SVG file to use as icon (optional)
+               Takes precedence over :icon when provided.
+               Only works in SVG layout mode (`knockknock-use-svg-layout').
+  :duration  - Duration in seconds (optional, defaults to `knockknock-default-duration')
 
 Examples:
   (knockknock-notify :title \"Success\" :message \"Build completed\")
   (knockknock-notify :title \"Error\"
                      :message \"Build failed\"
                      :icon \"nf-cod-error\"
-                     :duration 5)"
+                     :duration 5)
+  (knockknock-notify :title \"Custom Icon\"
+                     :message \"Using my own SVG!\"
+                     :icon-file \"~/icons/my-icon.svg\")"
   (interactive)
   (let* ((title (plist-get args :title))
          (message (plist-get args :message))
          (icon (or (plist-get args :icon) knockknock-default-icon))
+         (icon-file (plist-get args :icon-file))
          (duration (or (plist-get args :duration) knockknock-default-duration)))
 
     ;; Cancel any existing timer
@@ -540,7 +593,7 @@ Examples:
 
     ;; Create or clear the buffer and format it
     (with-current-buffer (get-buffer-create knockknock--buffer)
-      (knockknock--format-buffer title message icon))
+      (knockknock--format-buffer title message icon icon-file))
 
     ;; Save and temporarily increase max-image-size for SVG rendering
     (let* ((old-max-image-size max-image-size)

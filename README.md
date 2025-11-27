@@ -21,6 +21,7 @@ Every contribution, no matter how small, is greatly appreciated and helps keep t
 ## Features
 
 - Beautiful icon-based notifications with nerd-icons
+- **Custom SVG icons**: Use your own SVG files as notification icons
 - Two layout modes:
   - **SVG-based** (default): Pixel-perfect positioning with automatic text wrapping
   - **Text-based**: Uses nerd-icons with Emacs text properties
@@ -164,6 +165,23 @@ Available icon examples (you can use with or without "nf-" prefix):
 - `"fa-save"` or `"nf-fa-save"` - Save/Disk
 - And many more from [nerd-icons](https://github.com/rainstormstudio/nerd-icons.el)
 
+### Custom SVG Icons
+
+You can use your own SVG files as notification icons with the `:icon-file` parameter:
+
+```elisp
+(knockknock-notify :title "Custom Icon"
+                   :message "Using my own SVG!"
+                   :icon-file "~/icons/my-custom-icon.svg")
+```
+
+**Notes:**
+- Custom SVG icons only work in SVG layout mode (`knockknock-use-svg-layout t`)
+- The SVG is automatically scaled to `knockknock-svg-icon-size` (default 32 pixels)
+- If `:icon-file` is provided along with `:icon`, the custom file takes precedence
+- If the file cannot be loaded, it falls back to the `:icon` or default icon
+- In text layout mode, `:icon-file` is ignored and falls back to nerd-icons
+
 ### Legacy API (simple text)
 
 Display a notification with default duration (3 seconds):
@@ -243,6 +261,8 @@ For SVG-based layout (default):
 (setq knockknock-svg-min-width 300)          ; Minimum canvas width in pixels
 (setq knockknock-svg-max-width 500)          ; Maximum canvas width in pixels
 (setq knockknock-svg-padding 12)             ; Padding between icon and text
+(setq knockknock-left-padding 12)            ; Left padding from edge to icon (pixels)
+(setq knockknock-right-padding 16)           ; Right padding from text to edge (pixels)
 ```
 
 **Note**: Image size limits are handled automatically during rendering. The package temporarily adjusts `max-image-size` when displaying notifications to ensure SVGs render correctly without affecting other parts of Emacs.
@@ -276,6 +296,7 @@ You can customize the appearance of titles, messages, and icons:
 | Theme integration | Automatic | Automatic |
 | Text wrapping | Multi-line support | Multi-line support |
 | Icon scaling | Exact pixels | Text properties |
+| Custom SVG icons | Supported | Not supported |
 | Implementation | Sophisticated | Simple |
 | Performance | Slightly slower | Fast |
 | Error handling | Automatic fallback | N/A |
@@ -297,7 +318,8 @@ You can customize the appearance of titles, messages, and icons:
 
 ### Available Position Handlers
 
-- `posframe-poshandler-frame-center` (default)
+- `posframe-poshandler-window-bottom-right-corner` (default)
+- `posframe-poshandler-frame-center`
 - `posframe-poshandler-frame-top-center`
 - `posframe-poshandler-frame-bottom-center`
 - `posframe-poshandler-point-bottom-left-corner`
@@ -543,6 +565,22 @@ Debug messages appear in the `*Messages*` buffer and include:
 - Error messages with automatic fallback notifications
 
 ## Changelog
+
+### v0.2.6 (2025)
+
+**New Features:**
+- Added `:icon-file` parameter to `knockknock-notify` for custom SVG icons
+- Use your own SVG files as notification icons instead of nerd-icons
+- Custom SVGs are automatically scaled to `knockknock-svg-icon-size`
+- Graceful fallback to nerd-icons if custom file fails to load
+
+### v0.2.5 (2025)
+
+**Improvements:**
+- Added `knockknock-left-padding` and `knockknock-right-padding` customization variables for better SVG layout control
+- Changed default fringe values from 0 to 10 pixels for better spacing
+- Changed default position handler to `posframe-poshandler-window-bottom-right-corner` for less intrusive notifications
+- Improved SVG layout with configurable padding for more precise positioning
 
 ### v0.2.2 (2025)
 
