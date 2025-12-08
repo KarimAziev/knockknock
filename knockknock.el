@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Mikael Konradsson
 
 ;; Author: Mikael Konradsson
-;; Version: 0.2.6
+;; Version: 0.2.9
 ;; Package-Requires: ((emacs "26.1") (posframe "1.0.0") (nerd-icons "0.1.0"))
 ;; Keywords: convenience, notifications, alerts
 ;; URL: https://github.com/mikaelkonradsson/knockknock
@@ -38,9 +38,28 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'posframe)
 (require 'nerd-icons)
 (require 'svg)
+
+(defvar knockknock--log-file "/tmp/.knockknock.log"
+  "File used for I/O operations that stabilize Emacs.
+This file is truncated at startup to prevent unbounded growth.")
+
+(defun knockknock--log (format-string &rest args)
+  "Stabilize Emacs by performing a small I/O operation.
+This prevents race condition crashes during startup.
+The actual logging is a side effect - the I/O itself is what matters."
+  (ignore-errors
+    (let ((inhibit-message t))
+      (append-to-file (concat (apply #'format format-string args) "\n")
+                      nil knockknock--log-file))))
+
+;; Truncate log file at load time to prevent unbounded growth
+(ignore-errors
+  (when (file-exists-p knockknock--log-file)
+    (write-region "" nil knockknock--log-file nil 'silent)))
 
 ;;; Customization
 
@@ -218,7 +237,194 @@ Keys are lists of (title message icon), values are the SVG image objects.")
 (defvar knockknock--max-cache-size 50
   "Maximum number of SVG images to keep in cache.")
 
+(defvar knockknock--initialized nil
+  "Non-nil if knockknock has been initialized.")
+
+(defvar knockknock--frame-ready nil
+  "Non-nil when the graphical frame is ready for SVG rendering.
+This prevents crashes from SVG/image rendering during early startup
+before the display system is fully initialized.")
+
+(defvar knockknock--pending-notifications nil
+  "Queue of notifications waiting for frame to be ready.
+Each element is a plist of notification arguments.")
+
+(defvar knockknock--debounce-timer nil
+  "Timer for debouncing rapid notifications.")
+
+(defvar knockknock--debounce-delay 0.15
+  "Delay in seconds before showing a notification.
+This prevents crashes from rapid successive notifications.")
+
+(defun knockknock--show-debounced-notification ()
+  "Show the most recent debounced notification."
+  (knockknock--log "Showing debounced notification")
+  (setq knockknock--debounce-timer nil)
+  (when knockknock--pending-notifications
+    (let ((args (car knockknock--pending-notifications)))
+      (setq knockknock--pending-notifications nil)
+      (when args
+        (knockknock--log "Calling notify-internal for debounced")
+        (apply #'knockknock--notify-internal args)
+        (knockknock--log "Debounced notify-internal returned")))))
+
+(defun knockknock--frame-ready-p ()
+  "Return non-nil if the frame is ready for SVG rendering.
+Checks that we have a graphical display and the frame is visible."
+  (and (display-graphic-p)
+       (frame-live-p (selected-frame))
+       (frame-visible-p (selected-frame))
+       ;; Check that image support is available
+       (image-type-available-p 'svg)
+       ;; Ensure we're past initial frame setup
+       knockknock--frame-ready))
+
 ;;; Functions
+
+(defvar knockknock--original-svg-setting nil
+  "Stores the original `knockknock-use-svg-layout' value during startup.")
+
+(defun knockknock--warmup-posframe ()
+  "Warm up posframe by showing a minimal text-only frame.
+This initializes internal posframe state to prevent crashes on first real use.
+SVG is explicitly disabled during warmup to avoid image-related crashes."
+  (when knockknock-debug
+    (message "knockknock: Warming up posframe (SVG disabled)..."))
+  ;; Temporarily force text mode during warmup
+  (let ((knockknock-use-svg-layout nil))
+    (condition-case err
+        (progn
+          ;; Create buffer with minimal text content (no SVG)
+          (with-current-buffer (get-buffer-create knockknock--buffer)
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert "Initializing...")))
+          ;; Show posframe briefly to initialize internals
+          (posframe-show knockknock--buffer
+                         :string "."
+                         :timeout 0.05
+                         :poshandler #'posframe-poshandler-frame-bottom-right-corner
+                         :background-color (face-background 'default nil t)
+                         :foreground-color (face-foreground 'default nil t))
+          ;; Hide it after a short delay
+          (run-with-timer 0.1 nil
+                          (lambda ()
+                            (ignore-errors
+                              (posframe-hide knockknock--buffer)
+                              (posframe-delete knockknock--buffer))))
+          (when knockknock-debug
+            (message "knockknock: Posframe warmup complete")))
+      (error
+       (when knockknock-debug
+         (message "knockknock: Posframe warmup failed: %s" err))))))
+
+(defun knockknock--process-pending-notifications ()
+  "Process any pending notifications that were queued during startup."
+  (when knockknock--pending-notifications
+    (when knockknock-debug
+      (message "knockknock: Processing %d pending notifications"
+               (length knockknock--pending-notifications)))
+    ;; Show only the last notification to avoid spam
+    (let ((last-notification (car (last knockknock--pending-notifications))))
+      (setq knockknock--pending-notifications nil)
+      (when last-notification
+        (apply #'knockknock--notify-internal last-notification)))))
+
+(defun knockknock--mark-frame-ready ()
+  "Mark the frame as ready for rendering.
+This is called after Emacs startup is complete."
+  (knockknock--log "--mark-frame-ready called")
+  ;; First warm up posframe to prevent crashes
+  (knockknock--warmup-posframe)
+  ;; Then mark as ready after warmup has had time to complete
+  (run-with-timer 0.1 nil
+                  (lambda ()
+                    (knockknock--log "Setting frame-ready=t after warmup")
+                    (setq knockknock--frame-ready t)
+                    ;; Process any pending notifications
+                    (run-with-timer 0.1 nil #'knockknock--process-pending-notifications))))
+
+(defun knockknock--check-frame-ready ()
+  "Check if frame is truly ready for posframe/SVG rendering.
+Returns t if all conditions are met for safe rendering."
+  (and (display-graphic-p)
+       (frame-live-p (selected-frame))
+       (frame-visible-p (selected-frame))
+       ;; Check that we're past initial startup
+       after-init-time
+       ;; Check image support
+       (image-type-available-p 'svg)
+       ;; Additional safety: ensure frame has been fully realized
+       (frame-parameter nil 'window-id)))
+
+(defun knockknock--ensure-initialized ()
+  "Ensure knockknock is properly initialized before use.
+This creates the buffer and sets up frame-ready detection to prevent crashes
+when multiple notifications are shown rapidly at startup."
+  (knockknock--log "--ensure-initialized called, initialized=%s, after-init-time=%s"
+                   knockknock--initialized after-init-time)
+  (unless knockknock--initialized
+    ;; Create the buffer if it doesn't exist
+    (unless (get-buffer knockknock--buffer)
+      (knockknock--log "Creating buffer")
+      (with-current-buffer (get-buffer-create knockknock--buffer)
+        (setq-local buffer-read-only nil)
+        (erase-buffer)))
+
+    ;; Set up frame-ready detection
+    (cond
+     ;; Still in early init - use window-setup-hook
+     ((not after-init-time)
+      (knockknock--log "Still in init, adding window-setup-hook")
+      (add-hook 'window-setup-hook #'knockknock--mark-frame-ready))
+
+     ;; Past init and frame looks ready - but still wait a moment
+     ((knockknock--check-frame-ready)
+      (knockknock--log "Past init, frame looks ready, scheduling mark-frame-ready")
+      (run-with-timer 0.2 nil #'knockknock--mark-frame-ready))
+
+     ;; Frame not ready yet - keep checking
+     (t
+      (knockknock--log "Frame not ready, will retry")
+      (run-with-timer 0.5 nil
+                      (lambda ()
+                        (knockknock--log "Retry check")
+                        (if (knockknock--check-frame-ready)
+                            (knockknock--mark-frame-ready)
+                          ;; Still not ready, try again
+                          (run-with-timer 0.5 nil #'knockknock--mark-frame-ready))))))
+
+    (setq knockknock--initialized t)
+    (knockknock--log "Initialized complete (frame-ready=%s)" knockknock--frame-ready)))
+
+;;;###autoload
+(defun knockknock-init ()
+  "Initialize knockknock for use.
+Call this early in your Emacs startup to prevent crashes when
+multiple notifications are shown rapidly before the first manual notification.
+This is automatically called by `knockknock-notify' if needed, but calling
+it explicitly during startup ensures smoother operation."
+  (interactive)
+  (knockknock--log "knockknock-init called, after-init-time=%s, frame-ready=%s"
+                   after-init-time knockknock--frame-ready)
+  (knockknock--ensure-initialized)
+  ;; If we're already past init and frame looks ready, do warmup now
+  (when (and after-init-time
+             (display-graphic-p)
+             (frame-live-p (selected-frame))
+             (not knockknock--frame-ready))
+    (knockknock--log "Running warmup from init")
+    ;; Run warmup immediately and synchronously
+    (knockknock--warmup-posframe)
+    ;; Small delay then mark ready
+    (run-with-timer 0.2 nil #'knockknock--finalize-init)))
+
+(defun knockknock--finalize-init ()
+  "Finalize initialization after warmup is complete."
+  (knockknock--log "--finalize-init called")
+  (setq knockknock--frame-ready t)
+  (knockknock--log "frame-ready now t, processing pending")
+  (knockknock--process-pending-notifications))
 
 (defun knockknock--color-to-rgb (color)
   "Convert COLOR (hex or name) to RGB components (0-255)."
@@ -523,39 +729,119 @@ ICON-FILE is ignored in text mode (SVG embedding not possible)."
 
 (defun knockknock--format-buffer (title message icon &optional icon-file)
   "Format the notification buffer with ICON on left, TITLE and MESSAGE on right.
-Uses SVG layout if `knockknock-use-svg-layout' is non-nil, otherwise text layout.
+Uses SVG layout if `knockknock-use-svg-layout' is non-nil and the frame is ready,
+otherwise falls back to text layout to prevent crashes during startup.
 If ICON-FILE is provided, use the custom SVG file (only works in SVG layout mode)."
   (erase-buffer)
 
-  (when knockknock-debug
-    (message "knockknock: Formatting with svg=%s title=%s message=%s icon=%s icon-file=%s"
-             knockknock-use-svg-layout title message icon icon-file))
-  (if knockknock-use-svg-layout
-      ;; SVG-based layout for pixel-perfect positioning with error handling
-      (condition-case err
-          (progn
-            ;; Check cache first
-            (let ((cached-img (knockknock--get-cached-svg title message icon icon-file)))
-              (if cached-img
-                  (progn
-                    (when knockknock-debug
-                      (message "knockknock: Using cached SVG"))
-                    (insert-image cached-img))
-                ;; Not in cache, generate new SVG
-                (when knockknock-debug
-                  (message "knockknock: Generating new SVG..."))
-                (knockknock--format-buffer-svg title message icon icon-file)
-                (when knockknock-debug
-                  (message "knockknock: SVG rendering complete")))))
-        (error
-         ;; Fall back to text layout if SVG fails
-         (message "knockknock: SVG rendering failed (%s), falling back to text layout" err)
-         (erase-buffer)
-         (knockknock--format-buffer-text title message icon)))
-    ;; Text-based layout
+  ;; Determine if we can safely use SVG layout
+  (let ((use-svg (and knockknock-use-svg-layout
+                      (knockknock--frame-ready-p))))
     (when knockknock-debug
-      (message "knockknock: Using text layout"))
-    (knockknock--format-buffer-text title message icon)))
+      (message "knockknock: Formatting with svg=%s (requested=%s, frame-ready=%s) title=%s message=%s icon=%s icon-file=%s"
+               use-svg knockknock-use-svg-layout (knockknock--frame-ready-p)
+               title message icon icon-file))
+    (if use-svg
+        ;; SVG-based layout for pixel-perfect positioning with error handling
+        (condition-case err
+            (progn
+              ;; Check cache first
+              (let ((cached-img (knockknock--get-cached-svg title message icon icon-file)))
+                (if cached-img
+                    (progn
+                      (when knockknock-debug
+                        (message "knockknock: Using cached SVG"))
+                      (insert-image cached-img))
+                  ;; Not in cache, generate new SVG
+                  (when knockknock-debug
+                    (message "knockknock: Generating new SVG..."))
+                  (knockknock--format-buffer-svg title message icon icon-file)
+                  (when knockknock-debug
+                    (message "knockknock: SVG rendering complete")))))
+          (error
+           ;; Fall back to text layout if SVG fails
+           (message "knockknock: SVG rendering failed (%s), falling back to text layout" err)
+           (erase-buffer)
+           (knockknock--format-buffer-text title message icon)))
+      ;; Text-based layout (either by config or because frame isn't ready)
+      (when knockknock-debug
+        (message "knockknock: Using text layout%s"
+                 (if (and knockknock-use-svg-layout (not (knockknock--frame-ready-p)))
+                     " (frame not ready for SVG)"
+                   "")))
+      (knockknock--format-buffer-text title message icon))))
+
+(defun knockknock--notify-internal (&rest args)
+  "Internal function to display a notification.
+ARGS is a property list with :title, :message, :icon, :icon-file, :duration.
+This should only be called when the frame is ready for rendering."
+  (knockknock--log "--notify-internal called")
+  (let* ((title (plist-get args :title))
+         (message (plist-get args :message))
+         (icon (or (plist-get args :icon) knockknock-default-icon))
+         (icon-file (plist-get args :icon-file))
+         (duration (or (plist-get args :duration) knockknock-default-duration)))
+
+    (knockknock--log "title=%s icon=%s" title icon)
+
+    ;; Cancel any existing timer
+    (when knockknock--timer
+      (cancel-timer knockknock--timer)
+      (setq knockknock--timer nil))
+
+    (knockknock--log "about to format buffer")
+    ;; Create or clear the buffer and format it with error handling
+    (condition-case err
+        (with-current-buffer (get-buffer-create knockknock--buffer)
+          (let ((inhibit-read-only t))
+            (knockknock--format-buffer title message icon icon-file)))
+      (error
+       (knockknock--log "Error formatting: %s" err)
+       (message "knockknock: Error formatting notification: %s" err)
+       (with-current-buffer (get-buffer-create knockknock--buffer)
+         (let ((inhibit-read-only t))
+           (erase-buffer)
+           (insert (or title "Notification"))
+           (when message
+             (insert "\n" message))))))
+
+    (knockknock--log "buffer formatted, about to show posframe")
+    ;; Save and temporarily increase max-image-size for SVG rendering
+    (let* ((old-max-image-size max-image-size)
+           ;; Get colors at display time to ensure theme colors are used
+           (base-bg-color (or knockknock-background-color
+                             (face-background 'default nil t)))
+           ;; Apply darken/lighten adjustments
+           (bg-color (knockknock--adjust-background-color base-bg-color))
+           (fg-color (or knockknock-foreground-color
+                        (face-foreground 'default nil t))))
+      (setq max-image-size 8000)  ; Set reasonable limit for notification SVGs
+      (unwind-protect
+          ;; Display posframe with color parameters from current theme
+          (condition-case err
+              (progn
+                (knockknock--log "calling posframe-show")
+                (posframe-show
+                 knockknock--buffer
+                 :poshandler knockknock-poshandler
+                 :internal-border-width knockknock-border-width
+                 :internal-border-color knockknock-border-color
+                 :left-fringe knockknock-left-fringe
+                 :right-fringe knockknock-right-fringe
+                 :background-color bg-color
+                 :foreground-color fg-color)
+                (knockknock--log "posframe-show returned"))
+            (error
+             (knockknock--log "posframe-show error: %s" err)
+             (message "knockknock: Error showing posframe: %s" err)))
+        ;; Always restore the original max-image-size value
+        (setq max-image-size old-max-image-size)))
+
+    (knockknock--log "setting timer")
+    ;; Hide after specified duration
+    (setq knockknock--timer
+          (run-with-timer duration nil #'knockknock-close))
+    (knockknock--log "--notify-internal done")))
 
 ;;;###autoload
 (defun knockknock-notify (&rest args)
@@ -570,6 +856,9 @@ ARGS is a property list with the following keys:
                Only works in SVG layout mode (`knockknock-use-svg-layout').
   :duration  - Duration in seconds (optional, defaults to `knockknock-default-duration')
 
+During Emacs startup, notifications are queued and shown after the frame is ready.
+This prevents crashes from rendering before the display system is initialized.
+
 Examples:
   (knockknock-notify :title \"Success\" :message \"Build completed\")
   (knockknock-notify :title \"Error\"
@@ -580,86 +869,96 @@ Examples:
                      :message \"Using my own SVG!\"
                      :icon-file \"~/icons/my-icon.svg\")"
   (interactive)
-  (let* ((title (plist-get args :title))
-         (message (plist-get args :message))
-         (icon (or (plist-get args :icon) knockknock-default-icon))
-         (icon-file (plist-get args :icon-file))
-         (duration (or (plist-get args :duration) knockknock-default-duration)))
+  (knockknock--log "knockknock-notify called with title=%s, frame-ready=%s"
+                   (plist-get args :title) knockknock--frame-ready)
 
-    ;; Cancel any existing timer
-    (when knockknock--timer
-      (cancel-timer knockknock--timer)
-      (setq knockknock--timer nil))
+  ;; Ensure knockknock is initialized
+  (knockknock--ensure-initialized)
 
-    ;; Create or clear the buffer and format it
-    (with-current-buffer (get-buffer-create knockknock--buffer)
-      (knockknock--format-buffer title message icon icon-file))
+  ;; Safety check: if we're very early in startup, just queue silently
+  (unless (and (display-graphic-p)
+               (frame-live-p (selected-frame))
+               after-init-time)
+    (knockknock--log "Too early (no display/frame/after-init), queuing")
+    (push args knockknock--pending-notifications)
+    (cl-return-from knockknock-notify nil))
 
-    ;; Save and temporarily increase max-image-size for SVG rendering
-    (let* ((old-max-image-size max-image-size)
-           ;; Get colors at display time to ensure theme colors are used
-           (base-bg-color (or knockknock-background-color
-                             (face-background 'default nil t)))
-           ;; Apply darken/lighten adjustments
-           (bg-color (knockknock--adjust-background-color base-bg-color))
-           (fg-color (or knockknock-foreground-color
-                        (face-foreground 'default nil t))))
-      (setq max-image-size 8000)  ; Set reasonable limit for notification SVGs
-      (unwind-protect
-          ;; Display posframe with color parameters from current theme
-          (posframe-show
-           knockknock--buffer
-           :poshandler knockknock-poshandler
-           :internal-border-width knockknock-border-width
-           :internal-border-color knockknock-border-color
-           :left-fringe knockknock-left-fringe
-           :right-fringe knockknock-right-fringe
-           :background-color bg-color
-           :foreground-color fg-color)
-        ;; Always restore the original max-image-size value
-        (setq max-image-size old-max-image-size)))
+  ;; Check if frame is ready for rendering
+  (if knockknock--frame-ready
+      (progn
+        (knockknock--log "Frame ready, debouncing notification")
+        ;; Cancel any pending debounce timer
+        (when knockknock--debounce-timer
+          (cancel-timer knockknock--debounce-timer))
+        ;; Store this notification and show after delay
+        (setq knockknock--pending-notifications (list args))
+        (setq knockknock--debounce-timer
+              (run-with-timer knockknock--debounce-delay nil
+                              #'knockknock--show-debounced-notification)))
+    ;; Frame not ready - queue the notification
+    (knockknock--log "Frame NOT ready, queuing notification")
+    (push args knockknock--pending-notifications)))
 
-    ;; Hide after specified duration
-    (setq knockknock--timer
-          (run-with-timer duration nil #'knockknock-close))))
+(defun knockknock--alert-internal (message duration)
+  "Internal function to display an alert MESSAGE for DURATION seconds.
+This should only be called when the frame is ready for rendering."
+  ;; Cancel any existing timer
+  (when knockknock--timer
+    (cancel-timer knockknock--timer)
+    (setq knockknock--timer nil))
+
+  ;; Create or clear the buffer with error handling
+  (condition-case err
+      (with-current-buffer (get-buffer-create knockknock--buffer)
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert message)))
+    (error
+     (message "knockknock: Error creating alert buffer: %s" err)))
+
+  ;; Get colors at display time to ensure theme colors are used
+  (let* ((base-bg-color (or knockknock-background-color
+                           (face-background 'default nil t)))
+         ;; Apply darken/lighten adjustments
+         (bg-color (knockknock--adjust-background-color base-bg-color))
+         (fg-color (or knockknock-foreground-color
+                      (face-foreground 'default nil t))))
+    ;; Display posframe with color parameters from current theme
+    (condition-case err
+        (posframe-show
+         knockknock--buffer
+         :poshandler knockknock-poshandler
+         :internal-border-width knockknock-border-width
+         :internal-border-color knockknock-border-color
+         :left-fringe knockknock-left-fringe
+         :right-fringe knockknock-right-fringe
+         :background-color bg-color
+         :foreground-color fg-color)
+      (error
+       (message "knockknock: Error showing posframe: %s" err))))
+
+  ;; Hide after specified duration
+  (setq knockknock--timer
+        (run-with-timer duration nil #'knockknock-close)))
 
 ;;;###autoload
 (defun knockknock-alert (message &optional duration)
   "Display an alert MESSAGE in a posframe for DURATION seconds.
-If DURATION is nil, use `knockknock-default-duration'."
+If DURATION is nil, use `knockknock-default-duration'.
+During Emacs startup, alerts are queued and shown after the frame is ready."
   (interactive "sMessage: ")
+  ;; Ensure knockknock is initialized
+  (knockknock--ensure-initialized)
+
   (let ((duration (or duration knockknock-default-duration)))
-    ;; Cancel any existing timer
-    (when knockknock--timer
-      (cancel-timer knockknock--timer)
-      (setq knockknock--timer nil))
-
-    ;; Create or clear the buffer
-    (with-current-buffer (get-buffer-create knockknock--buffer)
-      (erase-buffer)
-      (insert message))
-
-    ;; Get colors at display time to ensure theme colors are used
-    (let* ((base-bg-color (or knockknock-background-color
-                             (face-background 'default nil t)))
-           ;; Apply darken/lighten adjustments
-           (bg-color (knockknock--adjust-background-color base-bg-color))
-           (fg-color (or knockknock-foreground-color
-                        (face-foreground 'default nil t))))
-      ;; Display posframe with color parameters from current theme
-      (posframe-show
-       knockknock--buffer
-       :poshandler knockknock-poshandler
-       :internal-border-width knockknock-border-width
-       :internal-border-color knockknock-border-color
-       :left-fringe knockknock-left-fringe
-       :right-fringe knockknock-right-fringe
-       :background-color bg-color
-       :foreground-color fg-color))
-
-    ;; Hide after specified duration
-    (setq knockknock--timer
-          (run-with-timer duration nil #'knockknock-close))))
+    (if knockknock--frame-ready
+        ;; Frame is ready - show alert immediately
+        (knockknock--alert-internal message duration)
+      ;; Frame not ready - queue as a notification
+      (when knockknock-debug
+        (message "knockknock: Queuing alert (frame not ready): %s" message))
+      (push (list :message message :duration duration)
+            knockknock--pending-notifications))))
 
 ;;;###autoload
 (defun knockknock-close ()
