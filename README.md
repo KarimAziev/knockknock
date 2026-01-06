@@ -204,6 +204,46 @@ Manually close the current notification:
 M-x knockknock-close
 ```
 
+### Progress Bar Notifications
+
+knockknock supports progress bar notifications for long-running operations:
+
+#### Percent-based progress
+
+```elisp
+;; Create progress bar
+(knockknock-progress-create :id 'download
+                            :title "Downloading"
+                            :message "package.tar.gz"
+                            :icon "cod-cloud-download"
+                            :percent 0)
+
+;; Update progress
+(knockknock-progress-update 'download :percent 50 :message "Halfway there...")
+(knockknock-progress-update 'download :percent 100)  ; Auto-closes when complete
+```
+
+#### Step-based progress
+
+```elisp
+;; Create with total steps
+(knockknock-progress-create :id 'build
+                            :title "Building"
+                            :message "Compiling..."
+                            :total 10)
+
+;; Update current step
+(knockknock-progress-update 'build :current 3)
+(knockknock-progress-update 'build :current 7 :message "Linking...")
+(knockknock-progress-update 'build :current 10)  ; Auto-closes at 100%
+```
+
+#### Manual close
+
+```elisp
+(knockknock-progress-close 'download)
+```
+
 ## Customization
 
 All aspects of knockknock can be customized through `M-x customize-group RET knockknock RET` or by setting variables in your configuration:
@@ -266,6 +306,26 @@ For SVG-based layout (default):
 ```
 
 **Note**: Image size limits are handled automatically during rendering. The package temporarily adjusts `max-image-size` when displaying notifications to ensure SVGs render correctly without affecting other parts of Emacs.
+
+### Progress Bar Settings
+
+```elisp
+;; Bar appearance
+(setq knockknock-progress-bar-height 12)        ; Height in pixels (SVG mode)
+(setq knockknock-progress-bar-corner-radius 0)  ; 0 for square corners
+(setq knockknock-progress-bar-width 30)         ; Width in characters (text mode)
+(setq knockknock-progress-bar-margin-top 8)     ; Space above bar
+
+;; Colors
+(setq knockknock-progress-color "#2196F3")      ; Fill color (blue)
+(setq knockknock-progress-background-color "#3a3a3a")  ; Track color
+
+;; Style: 'modern (default), 'terminal, or 'ascii
+(setq knockknock-progress-style 'modern)
+;; modern:   ███████████░░░░░░░░░ 55%
+;; terminal: ###########---------- 55%
+;; ascii:    [===========          ] 55%
+```
 
 ### Customizing Faces
 
@@ -565,6 +625,27 @@ Debug messages appear in the `*Messages*` buffer and include:
 - Error messages with automatic fallback notifications
 
 ## Changelog
+
+### v0.3.0 (2025)
+
+**New Features:**
+- Progress bar notifications with `knockknock-progress-create`, `knockknock-progress-update`, `knockknock-progress-close`
+- Support for both percent-based and step-based progress
+- Auto-close when progress reaches 100%
+- Progress bar stays visible until completion (not interrupted by regular notifications)
+- Customizable progress bar appearance:
+  - `knockknock-progress-color` - Fill color
+  - `knockknock-progress-background-color` - Track color
+  - `knockknock-progress-bar-height` - Height in pixels
+  - `knockknock-progress-bar-corner-radius` - Corner radius (0 for square)
+  - `knockknock-progress-style` - Visual style (modern/terminal/ascii)
+
+**Improvements:**
+- Regular notifications are skipped while progress bar is active
+- Frame readiness check prevents rendering issues during startup
+- Fixed zero-value bug in progress updates (`:current 0` and `:percent 0` now work correctly)
+- Fixed potential timer leak in progress render retry logic
+- Added input validation for progress creation parameters
 
 ### v0.2.6 (2025)
 
