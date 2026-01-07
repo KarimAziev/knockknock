@@ -600,7 +600,7 @@ Returns nil for nil or empty string input."
             (setq current-line word))))
       (when (not (string-empty-p current-line))
         (push current-line lines))
-      (nreverse lines))))
+      (nreverse lines)))))
 
 ;;; Progress bar helpers
 
