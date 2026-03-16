@@ -725,9 +725,9 @@ Returns the icon string or nil if not found."
   "Return MIME type string for image at FILE-PATH.
 Supports common image formats: SVG, PNG, JPEG, GIF, BMP, WEBP."
   (when-let ((type (image-supported-file-p file-path)))
-    (pcase type
-      ('svg "image/svg+xml")
-      (_ (format "image/%s" type)))))
+    (if (eq type 'svg)
+        "image/svg+xml"
+      (format "image/%s" type))))
 
 (defun knockknock--load-svg-file (file-path)
   "Load SVG content from FILE-PATH.
@@ -772,9 +772,9 @@ PROGRESS is a plist with :percent (0-100)."
   (require 'dom)
   ;; Set reasonable max-image-size for notifications
   (let ((max-image-size 8000))
-    (let* ((icon-file-path (when icon-file
-                            (let ((p (expand-file-name icon-file)))
-                              (when (file-readable-p p) p))))
+    (let* ((icon-file-path (when-let* ((icon-file)
+                                      ((file-readable-p icon-file)))
+                            (expand-file-name icon-file)))
            (icon-str (and (not icon-file-path)
                           icon
                           (knockknock--xml-escape (knockknock--get-icon icon))))
