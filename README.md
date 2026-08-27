@@ -10,14 +10,6 @@
 
 knockknock provides beautiful, elegant notifications using posframe and nerd-icons. Display temporary alert messages with custom icons, titles, and messages in a centered, customizable frame that automatically disappears. Features pixel-perfect SVG layout with automatic text wrapping for long messages.
 
-## Support
-
-This package is developed and maintained in my free time. If you find it useful and want to support continued development, consider sponsoring:
-
-💝 [Sponsor on GitHub](https://github.com/sponsors/konrad1977)
-
-Every contribution, no matter how small, is greatly appreciated and helps keep this project alive!
-
 ## Features
 
 - Beautiful icon-based notifications with nerd-icons
@@ -31,6 +23,7 @@ Every contribution, no matter how small, is greatly appreciated and helps keep t
 - Clean, centered notification display
 - Fully customizable appearance (colors, borders, duration, icon size)
 - Auto-dismiss after configurable duration
+- Optional click actions for interactive notifications
 - Manual dismiss support
 - Multiple position handlers available
 - **Robust error handling**: Automatic fallback from SVG to text layout on failure
@@ -96,12 +89,14 @@ Dark background with blue text (info style):
 ### Manual Installation
 
 1. Clone or download this repository to your local packages directory:
+
 ```bash
 cd ~/.emacs.d/localpackages
-git clone https://github.com/konrad1977/knockknock.git
+git clone https://github.com/KarimAziiev/knockknock.git
 ```
 
 2. Add to your Emacs configuration:
+
 ```elisp
 (add-to-list 'load-path "~/.emacs.d/localpackages/knockknock")
 (require 'knockknock)
@@ -111,14 +106,14 @@ git clone https://github.com/konrad1977/knockknock.git
 
 ```elisp
 (straight-use-package
- '(knockknock :type git :host github :repo "konrad1977/knockknock"))
+ '(knockknock :type git :host github :repo "KarimAziiev/knockknock"))
 ```
 
 ### Using use-package with straight
 
 ```elisp
 (use-package knockknock
-  :straight (:host github :repo "konrad1977/knockknock"))
+  :straight (:host github :repo "KarimAziiev/knockknock"))
 ```
 
 ## Usage
@@ -156,7 +151,22 @@ Long messages wrap automatically:
                    :duration 8)
 ```
 
+Make a notification actionable by passing a no-argument function with
+`:action`. Clicking the notification closes it and calls the function:
+
+```elisp
+(knockknock-notify :title "Build Complete"
+                   :message "Click to open the compilation buffer"
+                   :icon "cod-check"
+                   :action (lambda ()
+                             (pop-to-buffer "*compilation*")))
+```
+
+Actionable notifications also show a top-right `×`. Clicking it dismisses
+the notification without invoking `:action`.
+
 Available icon examples (you can use with or without "nf-" prefix):
+
 - `"cod-check"` or `"nf-cod-check"` - Checkmark
 - `"cod-error"` or `"nf-cod-error"` - Error/X
 - `"cod-info"` or `"nf-cod-info"` - Information
@@ -176,6 +186,7 @@ You can use your own SVG files as notification icons with the `:icon-file` param
 ```
 
 **Notes:**
+
 - Custom SVG icons only work in SVG layout mode (`knockknock-use-svg-layout t`)
 - The SVG is automatically scaled to `knockknock-svg-icon-size` (default 32 pixels)
 - If `:icon-file` is provided along with `:icon`, the custom file takes precedence
@@ -350,20 +361,21 @@ You can customize the appearance of titles, messages, and icons:
 
 ### SVG Layout vs Text Layout
 
-| Feature | SVG Layout (default) | Text Layout |
-|---------|---------------------|-------------|
-| Positioning | Pixel-perfect | Text-flow based |
-| Theme integration | Automatic | Automatic |
-| Text wrapping | Multi-line support | Multi-line support |
-| Icon scaling | Exact pixels | Text properties |
-| Custom SVG icons | Supported | Not supported |
-| Implementation | Sophisticated | Simple |
-| Performance | Slightly slower | Fast |
-| Error handling | Automatic fallback | N/A |
-| XML safety | Built-in escaping | N/A |
-| Crash prevention | Yes | N/A |
+| Feature           | SVG Layout (default) | Text Layout        |
+| ----------------- | -------------------- | ------------------ |
+| Positioning       | Pixel-perfect        | Text-flow based    |
+| Theme integration | Automatic            | Automatic          |
+| Text wrapping     | Multi-line support   | Multi-line support |
+| Icon scaling      | Exact pixels         | Text properties    |
+| Custom SVG icons  | Supported            | Not supported      |
+| Implementation    | Sophisticated        | Simple             |
+| Performance       | Slightly slower      | Fast               |
+| Error handling    | Automatic fallback   | N/A                |
+| XML safety        | Built-in escaping    | N/A                |
+| Crash prevention  | Yes                  | N/A                |
 
 **When to use SVG layout (default):**
+
 - You want pixel-perfect control over positioning
 - You're building a UI similar to agent-shell
 - You need exact icon and text placement
@@ -371,6 +383,7 @@ You can customize the appearance of titles, messages, and icons:
 - You benefit from automatic error handling and safety features
 
 **When to use text layout:**
+
 - You want simpler, faster rendering
 - Text-based layout is sufficient
 - You prefer Emacs-native text properties
@@ -548,6 +561,7 @@ All text (titles, messages, and icons) is automatically XML-escaped before being
 ### Smart Image Sizing
 
 The package temporarily adjusts `max-image-size` only during notification display, then immediately restores it. This ensures:
+
 - SVG notifications render correctly
 - Other parts of Emacs are not affected
 - No global state pollution
@@ -573,12 +587,15 @@ The font family used is "Symbols Nerd Font Mono". Verify it's installed correctl
 The package handles image size limits automatically. If you still have issues:
 
 1. **Enable debug mode** to see what's happening:
+
    ```elisp
    (setq knockknock-debug t)
    ```
+
    Check the `*Messages*` buffer for debug output.
 
 2. **Try switching to text layout** temporarily:
+
    ```elisp
    (setq knockknock-use-svg-layout nil)
    ```
@@ -597,6 +614,7 @@ If you experience crashes:
 3. Image size limits are handled **automatically and temporarily** - they don't affect other parts of Emacs
 
 If crashes persist, disable SVG layout:
+
 ```elisp
 (setq knockknock-use-svg-layout nil)
 ```
@@ -619,6 +637,7 @@ Enable detailed logging to troubleshoot issues:
 ```
 
 Debug messages appear in the `*Messages*` buffer and include:
+
 - Layout mode selection (SVG vs text)
 - SVG rendering progress
 - Image creation status
@@ -626,9 +645,19 @@ Debug messages appear in the `*Messages*` buffer and include:
 
 ## Changelog
 
+### v0.4.0 (2026)
+
+**New Features:**
+
+- Added actionable notifications via the `:action` parameter
+- Clicking an actionable notification closes it and invokes its callback
+- Actionable notifications use a hand pointer without recoloring on hover
+- Added a separate top-right close button that does not invoke the action
+
 ### v0.3.0 (2025)
 
 **New Features:**
+
 - Progress bar notifications with `knockknock-progress-create`, `knockknock-progress-update`, `knockknock-progress-close`
 - Support for both percent-based and step-based progress
 - Auto-close when progress reaches 100%
@@ -641,6 +670,7 @@ Debug messages appear in the `*Messages*` buffer and include:
   - `knockknock-progress-style` - Visual style (modern/terminal/ascii)
 
 **Improvements:**
+
 - Regular notifications are skipped while progress bar is active
 - Frame readiness check prevents rendering issues during startup
 - Fixed zero-value bug in progress updates (`:current 0` and `:percent 0` now work correctly)
@@ -650,6 +680,7 @@ Debug messages appear in the `*Messages*` buffer and include:
 ### v0.2.6 (2025)
 
 **New Features:**
+
 - Added `:icon-file` parameter to `knockknock-notify` for custom SVG icons
 - Use your own SVG files as notification icons instead of nerd-icons
 - Custom SVGs are automatically scaled to `knockknock-svg-icon-size`
@@ -658,6 +689,7 @@ Debug messages appear in the `*Messages*` buffer and include:
 ### v0.2.5 (2025)
 
 **Improvements:**
+
 - Added `knockknock-left-padding` and `knockknock-right-padding` customization variables for better SVG layout control
 - Changed default fringe values from 0 to 10 pixels for better spacing
 - Changed default position handler to `posframe-poshandler-window-bottom-right-corner` for less intrusive notifications
@@ -666,6 +698,7 @@ Debug messages appear in the `*Messages*` buffer and include:
 ### v0.2.2 (2025)
 
 **Bug Fixes & Improvements:**
+
 - Fixed crash issues related to SVG rendering and librsvg
 - Added XML escaping for safe SVG text rendering
 - Implemented automatic error handling with fallback to text layout
@@ -674,6 +707,7 @@ Debug messages appear in the `*Messages*` buffer and include:
 - Improved stability and crash prevention
 
 **Breaking Changes:**
+
 - Removed `knockknock-max-image-size` customization (now handled automatically)
 
 ### v0.2.1
@@ -689,6 +723,13 @@ Debug messages appear in the `*Messages*` buffer and include:
 - SVG-based pixel-perfect layout
 - Icon support via nerd-icons
 - Title and message display
+
+## Credits
+
+This fork is based on the original work by [konrad1977](https://github.com/konrad1977).
+
+If you'd like to support the original project, you can sponsor them here:
+💝 [Sponsor konrad1977 on GitHub](https://github.com/sponsors/konrad1977)
 
 ## License
 

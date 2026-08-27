@@ -1,9 +1,11 @@
 ;;; knockknock.el --- Unobtrusive notifications with icons and SVG support -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2025 Mikael Konradsson
+;; Copyright (C) 2026 Karim Aziiev
 
 ;; Author: Mikael Konradsson
-;; Version: 0.3.0
+;; Maintainer: Karim Aziiev <karim.aziiev@gmail.com>
+;; Version: 0.4.0
 ;; Package-Requires: ((emacs "26.1") (posframe "1.0.0") (nerd-icons "0.1.0"))
 ;; Keywords: convenience, notifications, alerts
 ;; URL: https://github.com/mikaelkonradsson/knockknock
@@ -28,7 +30,8 @@
 ;;   (knockknock-notify :title "Build Complete"
 ;;                      :message "All tests passed!"
 ;;                      :icon "nf-cod-check"
-;;                      :duration 5)
+;;                      :duration 5
+;;                      :action (lambda () (message "Opened!")))
 ;;
 ;;   ;; Enable SVG layout for pixel-perfect positioning
 ;;   (setq knockknock-use-svg-layout t)
@@ -179,8 +182,11 @@ When non-nil, prints debug messages to *Messages* buffer."
 
 (defcustom knockknock-use-svg-layout t
   "Use SVG-based layout for pixel-perfect positioning.
-When non-nil (default), uses SVG for rendering notifications with exact positioning.
+When non-nil (default), uses SVG for rendering notifications with exact
+positioning.
+
 When nil, uses text-based layout with nerd-icons.
+
 Includes XML escaping and error handling to prevent crashes."
   :type 'boolean
   :group 'knockknock)
@@ -302,6 +308,32 @@ If nil, uses a dimmed color based on theme."
 
 (defvar knockknock--timer nil
   "Timer for auto-hiding the alert.")
+
+(defvar-local knockknock--action nil
+  "Function to call when the current notification is activated.")
+
+(defconst knockknock--notification-map
+  (let ((map (make-sparse-keymap))
+        (action-map (make-sparse-keymap))
+        (close-map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'knockknock-activate)
+    (define-key action-map [mouse-1] #'knockknock-activate)
+    (define-key close-map [mouse-1] #'knockknock-close)
+    (define-key map [knockknock-action] action-map)
+    (define-key map [knockknock-close] close-map)
+    (define-key map (kbd "RET") #'knockknock-activate)
+    map)
+  "Keymap used by actionable notifications.")
+
+(defconst knockknock--close-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'knockknock-close)
+    (define-key map (kbd "RET") #'knockknock-close)
+    map)
+  "Keymap used by a notification's close control.")
+
+(defconst knockknock--close-button-size 24
+  "Size in pixels reserved for an actionable notification's close button.")
 
 (defvar knockknock--svg-cache (make-hash-table :test 'equal)
   "Cache for generated SVG images.
@@ -724,7 +756,7 @@ Returns the icon string or nil if not found."
 (defun knockknock--image-mime-type (file-path)
   "Return MIME type string for image at FILE-PATH.
 Supports common image formats: SVG, PNG, JPEG, GIF, BMP, WEBP."
-  (when-let ((type (image-supported-file-p file-path)))
+  (when-let* ((type (image-supported-file-p file-path)))
     (if (eq type 'svg)
         "image/svg+xml"
       (format "image/%s" type))))
@@ -745,166 +777,228 @@ FILE-PATH is expanded to handle ~ and other path shortcuts."
            (message "knockknock: Failed to load SVG file %s: %s" expanded-path err))
          nil)))))
 
-(defun knockknock--cache-key (title message icon &optional icon-file)
-  "Generate cache key from TITLE, MESSAGE, ICON, and optional ICON-FILE."
-  (list (or title "") (or message "") (or icon "") (or icon-file "")))
+(defun knockknock--cache-key (title message icon &optional icon-file actionable)
+  "Generate a cache key for a notification.
+TITLE, MESSAGE, ICON, ICON-FILE, and ACTIONABLE describe its appearance."
+  (list (or title "") (or message "") (or icon "") (or icon-file "")
+        (and actionable t)))
 
-(defun knockknock--get-cached-svg (title message icon &optional icon-file)
-  "Get cached SVG image for TITLE, MESSAGE, ICON, and ICON-FILE, or nil if not cached."
-  (gethash (knockknock--cache-key title message icon icon-file) knockknock--svg-cache))
+(defun knockknock--get-cached-svg (title message icon &optional icon-file
+                                         actionable)
+  "Get a cached SVG for TITLE, MESSAGE, ICON, ICON-FILE, and ACTIONABLE."
+  (gethash (knockknock--cache-key title message icon icon-file actionable)
+           knockknock--svg-cache))
 
-(defun knockknock--cache-svg (title message icon image &optional icon-file)
-  "Cache SVG IMAGE for TITLE, MESSAGE, ICON, and optional ICON-FILE.
+(defun knockknock--cache-svg (title message icon image &optional icon-file
+                                    actionable)
+  "Cache SVG IMAGE for TITLE, MESSAGE, ICON, ICON-FILE, and ACTIONABLE.
 If cache is full, clear oldest entries."
   (when (>= (hash-table-count knockknock--svg-cache) knockknock--max-cache-size)
     ;; Clear half the cache when full (simple LRU approximation)
     (clrhash knockknock--svg-cache))
-  (puthash (knockknock--cache-key title message icon icon-file) image knockknock--svg-cache))
+  (puthash (knockknock--cache-key title message icon icon-file actionable)
+           image knockknock--svg-cache))
 
-(defun knockknock--format-buffer-svg (title message icon &optional icon-file progress)
+(defun knockknock--notification-image-map (width height close-width
+                                                 close-height)
+  "Return an actionable notification image map of WIDTH by HEIGHT pixels.
+CLOSE-WIDTH and CLOSE-HEIGHT define the top-right close hot spot."
+  (list
+   `((rect . ((,(- width close-width) . 0) . (,width . ,close-height)))
+     knockknock-close
+     (pointer hand help-echo "Close notification"))
+   `((rect . ((0 . 0) . (,width . ,height)))
+     knockknock-action
+     (pointer hand help-echo "Click to activate notification"))))
+
+(defun knockknock--format-buffer-svg (title message icon &optional icon-file
+                                            progress actionable)
   "Format the notification buffer using SVG for pixel-perfect layout.
 ICON is on left, TITLE and MESSAGE on right with exact positioning.
-If ICON-FILE is provided, embed the custom image file instead of using nerd-icons.
+If ICON-FILE is provided, embed the custom image file instead of using
+nerd-icons.
 Supports SVG, PNG, JPEG, and other image formats via `svg-embed'.
 If PROGRESS is provided, render a progress bar at the bottom.
-PROGRESS is a plist with :percent (0-100)."
+PROGRESS is a plist with :percent (0-100).  If ACTIONABLE is non-nil,
+render a close button and add separate activation and close hot spots."
   (require 'svg)
   (require 'dom)
   ;; Set reasonable max-image-size for notifications
   (let ((max-image-size 8000))
-    (let* ((icon-file-path (when-let* ((icon-file)
-                                      ((file-readable-p icon-file)))
-                            (expand-file-name icon-file)))
+    (let* ((icon-file-path
+            (when-let* ((icon-file)
+                        ((file-readable-p icon-file)))
+              (expand-file-name icon-file)))
            (icon-str (and (not icon-file-path)
                           icon
                           (knockknock--xml-escape (knockknock--get-icon icon))))
            (has-icon (or icon-file-path icon-str))
            (title (knockknock--xml-escape title))
            (message (knockknock--xml-escape message))
-         (icon-size knockknock-svg-icon-size)
-         (padding knockknock-svg-padding)
-         ;; Calculate heights and positions - keep small to avoid max-image-size
-         (title-font-size 16)
-         (message-font-size 12)
-         (line-spacing 4)
-         (margin knockknock-left-padding)
-         (right-margin knockknock-right-padding)
-         (icon-x margin)
-         (icon-y (+ icon-size margin))  ; Baseline for icon
-         ;; Text position: if no icon, start at margin, otherwise after icon
-         (text-x (if has-icon
-                     (+ icon-size padding margin)
-                   margin))
-         (title-y (+ margin icon-size -12))  ; Position title near top
-         (message-y (+ title-y title-font-size line-spacing))
-         ;; Calculate needed width based on text content
-         ;; Estimate: ~7 pixels per character for 12px font, ~8 for 16px bold title
-         (title-width (if title (* (length title) 8) 0))
-         (message-width (if message (* (length message) 7) 0))
-         (needed-width (+ text-x (max title-width message-width) right-margin))
-         ;; Constrain canvas width between min and max
-         (canvas-width (max knockknock-svg-min-width
-                           (min knockknock-svg-max-width needed-width)))
-         ;; Calculate available text width and characters per line
-         (available-text-width (- canvas-width text-x right-margin))
-         (chars-per-line (max 20 (/ available-text-width 7)))
-         ;; Wrap message text and calculate height
-         (message-lines (when message (knockknock--wrap-text message chars-per-line)))
-         (num-message-lines (length message-lines))
-         (message-block-height (* num-message-lines (+ message-font-size line-spacing)))
-         ;; Calculate progress bar space if needed
-         (progress-height (if progress
-                              (+ knockknock-progress-bar-margin-top
-                                 knockknock-progress-bar-height
-                                 4)  ; extra padding
-                            0))
-         ;; Calculate total height with extra bottom padding
-         (bottom-padding 4)
-         (total-height (+ icon-size (* 2 margin) bottom-padding
-                          message-block-height progress-height))
-         ;; Colors from faces - use theme defaults
-         (default-fg (or (face-foreground 'default nil t) "#ffffff"))
-         (title-color (or (face-foreground 'knockknock-title-face nil t) default-fg))
-         (message-color (or (face-foreground 'knockknock-message-face nil t) default-fg))
-         (icon-color (or (face-foreground 'knockknock-icon-face nil t) default-fg)))
+           (icon-size knockknock-svg-icon-size)
+           (padding knockknock-svg-padding)
+           ;; Calculate heights and positions - keep small to avoid max-image-size
+           (title-font-size 16)
+           (message-font-size 12)
+           (line-spacing 4)
+           (margin knockknock-left-padding)
+           (right-margin knockknock-right-padding)
+           (close-button-size (if actionable knockknock--close-button-size 0))
+           (icon-x margin)
+           (icon-y (+ icon-size margin)) ; Baseline for icon
+           ;; Text position: if no icon, start at margin, otherwise after icon
+           (text-x (if has-icon
+                       (+ icon-size padding margin)
+                     margin))
+           (title-y (+ margin icon-size -12)) ; Position title near top
+           (message-y (+ title-y title-font-size line-spacing))
+           ;; Calculate needed width based on text content
+           ;; Estimate: ~7 pixels per character for 12px font, ~8 for 16px bold title
+           (title-width (if title (* (length title) 8) 0))
+           (message-width (if message (* (length message) 7) 0))
+           (needed-width (+ text-x (max title-width message-width)
+                            close-button-size right-margin))
+           ;; Constrain canvas width between min and max
+           (canvas-width (max knockknock-svg-min-width
+                              (min knockknock-svg-max-width needed-width)))
+           ;; Calculate available text width and characters per line
+           (available-text-width (- canvas-width text-x right-margin
+                                    close-button-size))
+           (chars-per-line (max 20 (/ available-text-width 7)))
+           ;; Wrap message text and calculate height
+           (message-lines
+            (when message
+              (knockknock--wrap-text message chars-per-line)))
+           (num-message-lines (length message-lines))
+           (message-block-height (* num-message-lines (+ message-font-size
+                                                         line-spacing)))
+           ;; Calculate progress bar space if needed
+           (progress-height (if progress
+                                (+ knockknock-progress-bar-margin-top
+                                   knockknock-progress-bar-height
+                                   4)   ; extra padding
+                              0))
+           ;; Calculate total height with extra bottom padding
+           (bottom-padding 4)
+           (total-height (+ icon-size (* 2 margin) bottom-padding
+                            message-block-height progress-height))
+           ;; Colors from faces - use theme defaults
+           (default-fg (or (face-foreground 'default nil t) "#ffffff"))
+           (title-color (or (face-foreground 'knockknock-title-face nil t)
+                            default-fg))
+           (message-color (or (face-foreground 'knockknock-message-face nil t)
+                              default-fg))
+           (icon-color (or (face-foreground 'knockknock-icon-face nil t)
+                           default-fg)))
+      ;; Create SVG
+      (let ((svg (svg-create canvas-width total-height)))
+        ;; Add icon - either custom image file or nerd-icons font
+        (cond ;; Custom image file (SVG, PNG, JPEG, etc.)
+         (icon-file-path
+          (svg-embed svg icon-file-path
+                     (or (knockknock--image-mime-type icon-file-path)
+                         "image/png")
+                     nil
+                     :x icon-x
+                     :y margin
+                     :width icon-size
+                     :height icon-size))
+         ;; Nerd-icons font icon
+         (icon-str
+          (let* ((nerd-font "Symbols Nerd Font Mono")
+                 (text-node (dom-node 'text
+                                      `((x . ,icon-x)
+                                        (y . ,icon-y)
+                                        (font-size . ,icon-size)
+                                        (font-family . ,nerd-font)
+                                        (fill . ,icon-color)))))
+            (dom-append-child text-node icon-str)
+            (svg--append svg text-node))))
+        ;; Add title using DOM nodes
+        (when title
+          (let ((text-node (dom-node 'text
+                                     `((x . ,text-x)
+                                       (y . ,title-y)
+                                       (font-size . ,title-font-size)
+                                       (font-weight . "bold")
+                                       (fill . ,title-color)))))
+            (dom-append-child text-node title)
+            (svg--append svg text-node)))
+        ;; Add a close glyph for actionable notifications.  Its independent
+        ;; click behavior is supplied by the image map below.
+        (when actionable
+          (let ((text-node
+                 (dom-node 'text
+                           `((x . ,(- canvas-width right-margin
+                                     (/ close-button-size 2)))
+                             (y . ,title-y)
+                             (font-size . 18)
+                             (font-weight . "bold")
+                             (text-anchor . "middle")
+                             (fill . ,message-color)
+                             (opacity . "0.75")))))
+            (dom-append-child text-node "×")
+            (svg--append svg text-node)))
+        ;; Add message using DOM nodes - multiple lines if needed
+        (when message-lines
+          (let ((current-y message-y))
+            (dolist (line message-lines)
+              (let ((text-node (dom-node 'text
+                                         `((x . ,text-x)
+                                           (y . ,current-y)
+                                           (font-size . ,message-font-size)
+                                           (fill . ,message-color)))))
+                (dom-append-child text-node line)
+                (svg--append svg text-node))
+              ;; Move to next line
+              (setq current-y (+ current-y message-font-size line-spacing)))))
+        ;; Add progress bar if provided
+        (when progress
+          (let* ((bar-y (+ message-y message-block-height
+                           knockknock-progress-bar-margin-top))
+                 (bar-width (- canvas-width text-x right-margin
+                               close-button-size 40))) ; 40 for percent text
+            (knockknock--svg-add-progress-bar
+             svg text-x bar-y
+             bar-width
+             knockknock-progress-bar-height
+             (plist-get progress :percent)
+             message-color)))
+        ;; Convert to image and cache it
+        (let* ((image-map
+                (when actionable
+                  (knockknock--notification-image-map
+                   canvas-width total-height
+                   (+ right-margin close-button-size)
+                   (+ margin close-button-size))))
+               (img (if actionable
+                        (svg-image svg
+                                   :pointer 'hand
+                                   :original-map image-map)
+                      (svg-image svg))))
+          (when knockknock-debug
+            (message "knockknock: SVG created, size: %dx%d, image: %s"
+                     canvas-width total-height (if img "OK" "FAILED")))
+          ;; Cache the generated image
+          (knockknock--cache-svg title message icon img icon-file actionable)
+          (insert-image img))))))
 
-    ;; Create SVG
-    (let ((svg (svg-create canvas-width total-height)))
+(defun knockknock--insert-text-close-button ()
+  "Insert a close button for a text-layout notification."
+  (insert
+   (propertize "  ×"
+               'local-map knockknock--close-map
+               'pointer 'hand
+               'help-echo "Close notification")))
 
-      ;; Add icon - either custom image file or nerd-icons font
-      (cond
-       ;; Custom image file (SVG, PNG, JPEG, etc.)
-       (icon-file-path
-        (svg-embed svg icon-file-path
-                   (or (knockknock--image-mime-type icon-file-path)
-                       "image/png")
-                   nil
-                   :x icon-x :y margin
-                   :width icon-size :height icon-size))
-       ;; Nerd-icons font icon
-       (icon-str
-        (let* ((nerd-font "Symbols Nerd Font Mono")
-               (text-node (dom-node 'text
-                                   `((x . ,icon-x)
-                                     (y . ,icon-y)
-                                     (font-size . ,icon-size)
-                                     (font-family . ,nerd-font)
-                                     (fill . ,icon-color)))))
-          (dom-append-child text-node icon-str)
-          (svg--append svg text-node))))
-
-      ;; Add title using DOM nodes
-      (when title
-        (let ((text-node (dom-node 'text
-                                   `((x . ,text-x)
-                                     (y . ,title-y)
-                                     (font-size . ,title-font-size)
-                                     (font-weight . "bold")
-                                     (fill . ,title-color)))))
-          (dom-append-child text-node title)
-          (svg--append svg text-node)))
-
-      ;; Add message using DOM nodes - multiple lines if needed
-      (when message-lines
-        (let ((current-y message-y))
-          (dolist (line message-lines)
-            (let ((text-node (dom-node 'text
-                                       `((x . ,text-x)
-                                         (y . ,current-y)
-                                         (font-size . ,message-font-size)
-                                         (fill . ,message-color)))))
-              (dom-append-child text-node line)
-              (svg--append svg text-node))
-            ;; Move to next line
-            (setq current-y (+ current-y message-font-size line-spacing)))))
-
-      ;; Add progress bar if provided
-      (when progress
-        (let* ((bar-y (+ message-y message-block-height
-                         knockknock-progress-bar-margin-top))
-               (bar-width (- canvas-width text-x right-margin 40)))  ; 40 for percent text
-          (knockknock--svg-add-progress-bar
-           svg text-x bar-y
-           bar-width
-           knockknock-progress-bar-height
-           (plist-get progress :percent)
-           message-color)))
-
-      ;; Convert to image and cache it
-      (let ((img (svg-image svg)))
-        (when knockknock-debug
-          (message "knockknock: SVG created, size: %dx%d, image: %s"
-                   canvas-width total-height (if img "OK" "FAILED")))
-        ;; Cache the generated image
-        (knockknock--cache-svg title message icon img icon-file)
-        (insert-image img))))))
-
-(defun knockknock--format-buffer-text (title message icon &optional _icon-file progress)
+(defun knockknock--format-buffer-text (title message icon &optional _icon-file
+                                             progress actionable)
   "Format the notification buffer using text-based layout with nerd-icons.
 ICON is on left, TITLE and MESSAGE on right.
 ICON-FILE is ignored in text mode (SVG embedding not possible).
 If PROGRESS is provided, render a progress bar at the bottom.
-PROGRESS is a plist with :percent (0-100)."
+PROGRESS is a plist with :percent (0-100).  If ACTIONABLE is non-nil,
+append a close button to the title line."
   (let* ((icon-str (knockknock--get-icon icon))
          (padding (make-string knockknock-icon-padding ?\s))
          (text-column knockknock-text-column))
@@ -921,6 +1015,8 @@ PROGRESS is a plist with :percent (0-100)."
           ;; Insert title on same line
           (when title
             (insert (propertize title 'face 'knockknock-title-face)))
+          (when actionable
+            (knockknock--insert-text-close-button))
 
           ;; Insert message on new line, aligned with title - wrap if needed
           (when message
@@ -940,6 +1036,8 @@ PROGRESS is a plist with :percent (0-100)."
       ;; Layout without icon - just text
       (when title
         (insert (propertize title 'face 'knockknock-title-face)))
+      (when actionable
+        (knockknock--insert-text-close-button))
       (when message
         (let ((message-lines (knockknock--wrap-text message knockknock-max-message-width)))
           (dolist (line message-lines)
@@ -950,31 +1048,37 @@ PROGRESS is a plist with :percent (0-100)."
         (insert "\n")
         (insert (knockknock--text-progress-bar (plist-get progress :percent)))))))
 
-(defun knockknock--format-buffer (title message icon &optional icon-file progress)
+(defun knockknock--format-buffer (title message icon &optional icon-file
+                                        progress actionable)
   "Format the notification buffer with ICON on left, TITLE and MESSAGE on right.
-Uses SVG layout if `knockknock-use-svg-layout' is non-nil and the frame is ready,
-otherwise falls back to text layout to prevent crashes during startup.
-If ICON-FILE is provided, use the custom SVG file (only works in SVG layout mode).
-If PROGRESS is provided, render a progress bar at the bottom.
-PROGRESS is a plist with :percent (0-100)."
-  (erase-buffer)
 
+Uses SVG layout if `knockknock-use-svg-layout' is non-nil and the frame is
+ready, otherwise falls back to text layout to prevent crashes during startup.
+
+If ICON-FILE is provided, use the custom SVG file (only works in SVG layout
+mode). If PROGRESS is provided, render a progress bar at the bottom. PROGRESS is
+a plist with :percent (0-100).  ACTIONABLE adds activation and close controls."
+  (erase-buffer)
   ;; Determine if we can safely use SVG layout
   (let ((use-svg (and knockknock-use-svg-layout
                       (knockknock--frame-ready-p))))
     (when knockknock-debug
-      (message "knockknock: Formatting with svg=%s (requested=%s, frame-ready=%s) title=%s message=%s icon=%s icon-file=%s progress=%s"
-               use-svg knockknock-use-svg-layout (knockknock--frame-ready-p)
-               title message icon icon-file progress))
+      (message
+       "knockknock: Formatting with svg=%s (requested=%s, frame-ready=%s) title=%s message=%s icon=%s icon-file=%s progress=%s"
+       use-svg knockknock-use-svg-layout (knockknock--frame-ready-p)
+       title message icon icon-file progress))
     (if use-svg
         ;; SVG-based layout for pixel-perfect positioning with error handling
         (condition-case err
             (progn
               ;; Skip cache for progress notifications (they change constantly)
               (if progress
-                  (knockknock--format-buffer-svg title message icon icon-file progress)
+                  (knockknock--format-buffer-svg title message icon icon-file
+                                                 progress actionable)
                 ;; Check cache first for non-progress notifications
-                (let ((cached-img (knockknock--get-cached-svg title message icon icon-file)))
+                (let ((cached-img (knockknock--get-cached-svg title message icon
+                                                              icon-file
+                                                              actionable)))
                   (if cached-img
                       (progn
                         (when knockknock-debug
@@ -983,32 +1087,57 @@ PROGRESS is a plist with :percent (0-100)."
                     ;; Not in cache, generate new SVG
                     (when knockknock-debug
                       (message "knockknock: Generating new SVG..."))
-                    (knockknock--format-buffer-svg title message icon icon-file)
+                    (knockknock--format-buffer-svg title message icon icon-file
+                                                   nil actionable)
                     (when knockknock-debug
                       (message "knockknock: SVG rendering complete"))))))
           (error
            ;; Fall back to text layout if SVG fails
-           (message "knockknock: SVG rendering failed (%s), falling back to text layout" err)
+           (message
+            "knockknock: SVG rendering failed (%s), falling back to text layout"
+            err)
            (erase-buffer)
-           (knockknock--format-buffer-text title message icon nil progress)))
+           (knockknock--format-buffer-text title message icon nil progress
+                                           actionable)))
       ;; Text-based layout (either by config or because frame isn't ready)
       (when knockknock-debug
         (message "knockknock: Using text layout%s"
-                 (if (and knockknock-use-svg-layout (not (knockknock--frame-ready-p)))
+                 (if
+                     (and knockknock-use-svg-layout
+                          (not
+                           (knockknock--frame-ready-p)))
                      " (frame not ready for SVG)"
                    "")))
-      (knockknock--format-buffer-text title message icon nil progress))))
+      (knockknock--format-buffer-text title message icon nil progress
+                                      actionable))))
+
+(defun knockknock--set-action (action)
+  "Make the current notification invoke ACTION when activated.
+ACTION must be a function or nil."
+  (setq knockknock--action action)
+  (use-local-map (and action knockknock--notification-map))
+  ;; Text properties only affect glyphs.  Cover the padding after and
+  ;; below them as well so the whole actionable notification advertises
+  ;; the same interaction.
+  (setq-local void-text-area-pointer (if action 'hand 'arrow))
+  (when action
+    (add-text-properties
+     (point-min) (point-max)
+     '(pointer hand
+       help-echo "Click to activate notification"))))
 
 (defun knockknock--notify-internal (&rest args)
   "Internal function to display a notification.
-ARGS is a property list with :title, :message, :icon, :icon-file, :duration.
+ARGS is a property list with :title, :message, :icon, :icon-file,
+:duration, and :action.
 This should only be called when the frame is ready for rendering."
   (knockknock--log "--notify-internal called")
   (let* ((title (plist-get args :title))
          (message (plist-get args :message))
          (icon (or (plist-get args :icon) knockknock-default-icon))
          (icon-file (plist-get args :icon-file))
-         (duration (or (plist-get args :duration) knockknock-default-duration)))
+         (duration (or (plist-get args :duration) knockknock-default-duration))
+         (action (plist-get args :action)))
 
     (knockknock--log "title=%s icon=%s" title icon)
 
@@ -1022,7 +1151,8 @@ This should only be called when the frame is ready for rendering."
     (condition-case err
         (with-current-buffer (get-buffer-create knockknock--buffer)
           (let ((inhibit-read-only t))
-            (knockknock--format-buffer title message icon icon-file)))
+            (knockknock--format-buffer title message icon icon-file nil action)
+            (knockknock--set-action action)))
       (error
        (knockknock--log "Error formatting: %s" err)
        (message "knockknock: Error formatting notification: %s" err)
@@ -1031,7 +1161,8 @@ This should only be called when the frame is ready for rendering."
            (erase-buffer)
            (insert (or title "Notification"))
            (when message
-             (insert "\n" message))))))
+             (insert "\n" message))
+           (knockknock--set-action action)))))
 
     (knockknock--log "buffer formatted, about to show posframe")
     ;; Save and temporarily increase max-image-size for SVG rendering
@@ -1057,7 +1188,13 @@ This should only be called when the frame is ready for rendering."
                  :left-fringe knockknock-left-fringe
                  :right-fringe knockknock-right-fringe
                  :background-color bg-color
-                 :foreground-color fg-color)
+                 :foreground-color fg-color
+                 ;; On macOS, an NS child frame with `no-accept-focus'
+                 ;; does not reliably honor pointer shapes on text or
+                 ;; image hot spots.  Merely allow actionable
+                 ;; notifications to accept focus; `posframe-show'
+                 ;; does not focus the frame when displaying it.
+                 :accept-focus (and action t))
                 (knockknock--log "posframe-show returned"))
             (error
              (knockknock--log "posframe-show error: %s" err)
@@ -1078,13 +1215,18 @@ This should only be called when the frame is ready for rendering."
 ARGS is a property list with the following keys:
   :title     - Title text (optional)
   :message   - Message text (optional)
-  :icon      - Nerd-icon name (optional, defaults to `knockknock-default-icon')
+  :icon      - Nerd-icon name (optional, defaults to
+              `knockknock-default-icon')
   :icon-file - Path to a custom SVG file to use as icon (optional)
                Takes precedence over :icon when provided.
                Only works in SVG layout mode (`knockknock-use-svg-layout').
-  :duration  - Duration in seconds (optional, defaults to `knockknock-default-duration')
+  :duration  - Duration in seconds (optional, defaults to
+               `knockknock-default-duration')
+  :action    - Function called when the notification is clicked or RET
+               is pressed
 
-During Emacs startup, notifications are queued and shown after the frame is ready.
+During Emacs startup, notifications are queued and shown after the frame is
+ready.
 This prevents crashes from rendering before the display system is initialized.
 
 Examples:
@@ -1099,24 +1241,25 @@ Examples:
   (interactive)
   (knockknock--log "knockknock-notify called with title=%s, frame-ready=%s"
                    (plist-get args :title) knockknock--frame-ready)
-
+  (when (and (plist-member args :action)
+             (not (functionp (plist-get args :action))))
+    (error "knockknock-notify: :action must be a function or nil"))
   ;; Skip regular notifications when a progress bar is active
   ;; Progress bars should not be interrupted by transient notifications
   (when knockknock--progress-state
     (knockknock--log "Progress active, skipping regular notification")
-    (cl-return-from knockknock-notify nil))
-
+    (cl-return-from knockknock-notify
+      nil))
   ;; Ensure knockknock is initialized
   (knockknock--ensure-initialized)
-
   ;; Safety check: if we're very early in startup, just queue silently
   (unless (and (display-graphic-p)
                (frame-live-p (selected-frame))
                after-init-time)
     (knockknock--log "Too early (no display/frame/after-init), queuing")
     (push args knockknock--pending-notifications)
-    (cl-return-from knockknock-notify nil))
-
+    (cl-return-from knockknock-notify
+      nil))
   ;; Check if frame is ready for rendering
   (if knockknock--frame-ready
       (progn
@@ -1146,7 +1289,8 @@ This should only be called when the frame is ready for rendering."
       (with-current-buffer (get-buffer-create knockknock--buffer)
         (let ((inhibit-read-only t))
           (erase-buffer)
-          (insert message)))
+          (insert message)
+          (knockknock--set-action nil)))
     (error
      (message "knockknock: Error creating alert buffer: %s" err)))
 
@@ -1200,17 +1344,37 @@ During Emacs startup, alerts are queued and shown after the frame is ready."
             knockknock--pending-notifications))))
 
 ;;;###autoload
-(defun knockknock-close ()
-  "Manually close the alert posframe.
-Does nothing if a progress bar is currently active."
+(defun knockknock-activate ()
+  "Activate and close the current actionable notification."
   (interactive)
+  (let ((action knockknock--action))
+    (knockknock-close t)
+    (when action
+      (funcall action))))
+
+;;;###autoload
+(defun knockknock-close (&optional restore-focus)
+  "Manually close the alert posframe.
+Does nothing if a progress bar is currently active.
+When RESTORE-FOCUS is non-nil, return input focus to the posframe's
+parent frame after closing it.  Interactive calls do this automatically."
+  (interactive (list t))
   ;; Don't close if progress bar is active - progress has its own lifecycle
   (unless knockknock--progress-state
-    (when knockknock--timer
-      (cancel-timer knockknock--timer)
-      (setq knockknock--timer nil))
-    (posframe-hide knockknock--buffer)
-    (posframe-delete knockknock--buffer)))
+    (let* ((buffer (get-buffer knockknock--buffer))
+           (posframe (and buffer
+                          (buffer-local-value 'posframe--frame buffer)))
+           (parent-frame (and restore-focus
+                              posframe
+                              (frame-live-p posframe)
+                              (frame-parent posframe))))
+      (when knockknock--timer
+        (cancel-timer knockknock--timer)
+        (setq knockknock--timer nil))
+      (posframe-hide knockknock--buffer)
+      (posframe-delete knockknock--buffer)
+      (when (and parent-frame (frame-live-p parent-frame))
+        (select-frame-set-input-focus parent-frame t)))))
 
 ;;; Progress bar notifications
 
