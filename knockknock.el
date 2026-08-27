@@ -144,8 +144,37 @@ Note: If both darken and lighten are set, darken takes precedence."
 
 (defcustom knockknock-poshandler #'posframe-poshandler-window-bottom-right-corner
   "Position handler function for the alert frame.
-See `posframe-show' for available handlers."
-  :type 'function
+The selected handler positions every knockknock notification.  Point
+handlers place it relative to the cursor; window handlers use the selected
+window; and frame handlers use the parent frame.  See `posframe-show' and
+the posframe documentation for additional handlers."
+  :type
+  '(radio
+    (const :tag "Window: bottom right (default)"
+     posframe-poshandler-window-bottom-right-corner)
+    (const :tag "Window: bottom left"
+     posframe-poshandler-window-bottom-left-corner)
+    (const :tag "Window: top right"
+     posframe-poshandler-window-top-right-corner)
+    (const :tag "Window: top left"
+     posframe-poshandler-window-top-left-corner)
+    (const :tag "Window: center"
+     posframe-poshandler-window-center)
+    (const :tag "Frame: bottom right"
+     posframe-poshandler-frame-bottom-right-corner)
+    (const :tag "Frame: bottom left"
+     posframe-poshandler-frame-bottom-left-corner)
+    (const :tag "Frame: top right"
+     posframe-poshandler-frame-top-right-corner)
+    (const :tag "Frame: top left"
+     posframe-poshandler-frame-top-left-corner)
+    (const :tag "Frame: center"
+     posframe-poshandler-frame-center)
+    (const :tag "Cursor: below"
+     posframe-poshandler-point-bottom-left-corner)
+    (const :tag "Cursor: above"
+     posframe-poshandler-point-bottom-left-corner-upward)
+    (function :tag "Custom posframe handler"))
   :group 'knockknock)
 
 (defcustom knockknock-icon-size 2.0

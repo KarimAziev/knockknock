@@ -3,6 +3,8 @@
 (require 'ert)
 (require 'knockknock)
 
+;;; Code:
+
 (ert-deftest knockknock-action-activation ()
   "Activating a notification closes it and invokes its action."
   (let (activated closed)
@@ -25,6 +27,15 @@
   "The public API rejects a non-function action."
   (should-error (knockknock-notify :title "Invalid" :action 42)
                 :type 'error))
+
+(ert-deftest knockknock-poshandler-offers-cursor-relative-positions ()
+  "The position option exposes cursor-relative handlers in Customize."
+  (let ((custom-type (flatten-tree
+                      (get 'knockknock-poshandler 'custom-type))))
+    (should (memq 'posframe-poshandler-point-bottom-left-corner
+                  custom-type))
+    (should (memq 'posframe-poshandler-point-bottom-left-corner-upward
+                  custom-type))))
 
 (ert-deftest knockknock-actionable-svg-has-pointer-and-hot-spots ()
   "An actionable SVG distinguishes activation from its close button."

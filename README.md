@@ -392,11 +392,16 @@ You can customize the appearance of titles, messages, and icons:
 ### Available Position Handlers
 
 - `posframe-poshandler-window-bottom-right-corner` (default)
+- `posframe-poshandler-window-top-left-corner`
 - `posframe-poshandler-frame-center`
 - `posframe-poshandler-frame-top-center`
 - `posframe-poshandler-frame-bottom-center`
-- `posframe-poshandler-point-bottom-left-corner`
+- `posframe-poshandler-point-bottom-left-corner` (below the cursor)
+- `posframe-poshandler-point-bottom-left-corner-upward` (above the cursor)
 - And many more from posframe
+
+Use `M-x customize-option RET knockknock-poshandler` to choose a common
+position interactively, or assign any compatible posframe handler directly.
 
 ## Example Integration
 

@@ -1,5 +1,7 @@
 ;;; knockknock-showcase.el --- Showcase different knockknock configurations -*- lexical-binding: t; -*-
 
+;;; Commentary:
+
 ;; This file contains example configurations for taking screenshots
 ;; of the knockknock notification package.
 
@@ -25,7 +27,8 @@
         knockknock-use-icons t
         knockknock-use-svg-layout t
         knockknock-svg-icon-size 32
-        knockknock-svg-width 350
+        knockknock-svg-min-width 300
+        knockknock-svg-max-width 500
         knockknock-svg-padding 12
         knockknock-max-message-width 40))
 
@@ -181,6 +184,17 @@
   (setq knockknock-poshandler #'posframe-poshandler-window-center)
   (knockknock-notify :title "Center"
                      :message "Notification positioned at center"
+                     :icon "nf-cod-target"
+                     :duration 10))
+
+(defun knockknock-showcase-16a-cursor ()
+  "Show notification immediately below point."
+  (interactive)
+  (knockknock-showcase-reset)
+  (setq knockknock-poshandler
+        #'posframe-poshandler-point-bottom-left-corner)
+  (knockknock-notify :title "At Cursor"
+                     :message "Notification positioned below point"
                      :icon "nf-cod-target"
                      :duration 10))
 
@@ -409,7 +423,7 @@
   (interactive)
   (knockknock-showcase-reset)
   (setq knockknock-svg-icon-size 64
-        knockknock-svg-width 400)
+        knockknock-svg-min-width 400)
   (knockknock-notify :title "Huge Icon"
                      :message "Icon size: 64 pixels with wider canvas"
                      :icon "nf-cod-dashboard"
@@ -474,7 +488,8 @@
   (interactive)
   (knockknock-showcase-reset)
   (setq knockknock-max-message-width 25
-        knockknock-svg-width 250)
+        knockknock-svg-min-width 250
+        knockknock-svg-max-width 250)
   (knockknock-notify :title "Narrow Width"
                      :message "This message wraps at 25 characters per line making it appear narrower."
                      :icon "nf-cod-fold"
@@ -485,7 +500,8 @@
   (interactive)
   (knockknock-showcase-reset)
   (setq knockknock-max-message-width 60
-        knockknock-svg-width 450)
+        knockknock-svg-min-width 450
+        knockknock-svg-max-width 450)
   (knockknock-notify :title "Wide Width"
                      :message "This message can be much longer per line with 60 characters maximum width allowing more text to fit on each line before wrapping."
                      :icon "nf-cod-unfold"
